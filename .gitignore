@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------
+# Licensed match data: never commit (Opta / TRACAB / tracking exports)
+# ---------------------------------------------------------------
+data/
+opta/
+比赛数据/
+*.xml
+*.parquet
+*.dat
+*.csv
+*.pdf
+
+# Annotation blinding key for the third adjudicator
+*DO_NOT_SHARE*
+
+# Derived outputs: model runs, label arrays, adjudication packs, logs
+artifacts/
+*.npz
+*.npy
+*.pt
+*.ckpt
+*.mp4
+*.log
+
+# Unpublished study documents (kept local; the repo is public)
+STUDY1_PLAN*.md
+REVIEW_SEARCH_FRAMEWORK*.md
+_archive/
+*.before*
+
+# Credentials / local config
+.env
+.env.*
+*.pem
+*.key
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+*.egg-info/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+.obsidian/

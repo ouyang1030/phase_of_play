@@ -1,0 +1,12 @@
+# Python >= 3.11 (developed on 3.13)
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+torch>=2.3
+matplotlib>=3.8
+pyarrow>=15
+
+# Optional
+# databallpy        # notebooks/preprocessing.ipynb (tracking–event sync)
+# ffmpeg (system)   # tools/adj/make_pack.py --anim
