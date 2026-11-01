@@ -16,12 +16,16 @@ Merge: agreement -> label; disagreement <= 1 s between agreed sides -> midpoint;
 alive frames neither coder labelled -> clip for the blinded third adjudicator.
 Subcategories (Annotation_Subcategory, index into phase.prep.SUBCATS) follow every step of their coder's moment
 label (subA / subB in labels_v1_25hz.csv); one that belongs to another moment than the frame's label is dropped (-1).
+With --meta (phase.meta: period_start_frame / period_end_frame) frames outside a period count as dead ball even if
+ball_status says alive (Ajax-PSV: a 2.4 s "alive" blip in the half-time break).
 
-  python tools/adj/codebook_v1.py convert A.csv B.csv events.csv tracking.npz OUT_DIR
-  python tools/adj/codebook_v1.py validate export.csv events.csv tracking.npz
+  python tools/adj/codebook_v1.py convert A.csv B.csv events.csv tracking.npz OUT_DIR [--meta META_JSON]
+  python tools/adj/codebook_v1.py validate export.csv events.csv tracking.npz [--meta META_JSON]
 """
+import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +34,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import restarts as R  # noqa: E402
+from phase import meta as M  # noqa: E402
 from phase.prep import SUBCATS  # noqa: E402
 
 FPS, TAU, GAP, LAG = 25, 25, 5, 25
@@ -53,6 +58,20 @@ def read_cats(path):
     df.columns = [c.rstrip(';') for c in df.columns]
     sub = df.Annotation_Subcategory if 'Annotation_Subcategory' in df else pd.Series([''] * len(df))
     return df.Annotation_Category, sub, df.ball_status.eq('alive').to_numpy()
+
+
+def in_periods(T, meta_json):
+    """Frames [0, T) inside a period of meta.json (all True without meta or without period_end_frame)."""
+    if meta_json is None:
+        return np.ones(T, bool)
+    per = M.periods(M.load(meta_json))
+    if per is None:
+        warnings.warn(f'{meta_json} has no period_end_frame: frames outside periods are not masked')
+        return np.ones(T, bool)
+    inside = np.zeros(T, bool)
+    for a, b in per.values():
+        inside[a:b + 1] = True
+    return inside
 
 
 def runs(mask):
@@ -190,12 +209,15 @@ def irr_subcategory(a, b, suba, subb, alive):
                                            for k in (0, 1, 2, 3)}}
 
 
-def convert(a_csv, b_csv, events_csv, npz, out):
+def convert(a_csv, b_csv, events_csv, npz, out, meta_json=None):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     ca, sca, alive = read_cats(a_csv)
     cb, scb, alive_b = read_cats(b_csv)
     assert (alive == alive_b).all(), 'ball_status differs between the two files'
+    inside = in_periods(len(alive), meta_json)
+    alive_outside = int((alive & ~inside).sum())
+    alive = alive & inside
     d = dict(np.load(npz))
     rs = R.detect(alive, d, events_csv)
     rs['set_piece'] = [is_set_piece(r) for r in rs.itertuples()]
@@ -220,7 +242,7 @@ def convert(a_csv, b_csv, events_csv, npz, out):
            'all frames incl. INACTIVE (inflated, do not report)': kappa(a, b, [0, 1, 2, 3, SP, INACTIVE])}
     irr_sub = irr_subcategory(a, b, suba, subb, alive)
     summary = dict(
-        frames=len(final), alive=int(alive.sum()),
+        frames=len(final), alive=int(alive.sum()), alive_outside_periods_masked=alive_outside,
         restarts=rs.kind.value_counts().to_dict(), set_piece_restarts=int(rs.set_piece.sum()),
         conversion={c: dict(sp_gap_s=round(float((s_ == 'sp_gap').sum()) / FPS, 1),
                             restart_lag_s=round(float((s_ == 'restart_lag').sum()) / FPS, 1),
@@ -243,7 +265,7 @@ def convert(a_csv, b_csv, events_csv, npz, out):
                   'final': final, 'src': src, 'subA': suba, 'subB': subb}).to_csv(out / 'labels_v1_25hz.csv', index=False)
 
 
-def validate(export_csv, events_csv, npz):
+def validate(export_csv, events_csv, npz, meta_json=None):
     """Checks for one coder's export under codebook v1. Errors: overlaps, unknown categories, moment labels or
     'Inactive' on the wrong side of ball_status, missing subcategories, segments < 0.5 s (unless cut by a dead
     ball), alive blanks > 1 s other than the leading blank after a set-piece restart. Alive blanks <= 1 s are
@@ -251,7 +273,7 @@ def validate(export_csv, events_csv, npz):
     df = pd.read_csv(export_csv, low_memory=False, dtype=str)
     df.columns = [c.rstrip(';') for c in df.columns]
     cat = df.Annotation_Category.fillna('').str.strip()
-    alive = df.ball_status.eq('alive').to_numpy()
+    alive = df.ball_status.eq('alive').to_numpy() & in_periods(len(df), meta_json)
     lab = cat.map(CATEGORY).fillna(UNCODED).astype(int).to_numpy()
     sub = df.get('Annotation_Subcategory', pd.Series([''] * len(df))).fillna('').str.strip()
     rs = R.detect(alive, dict(np.load(npz)), events_csv)
@@ -277,8 +299,24 @@ def validate(export_csv, events_csv, npz):
     return v
 
 
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    c = sub.add_parser('convert')
+    for name in ('a_csv', 'b_csv', 'events_csv', 'npz', 'out'):
+        c.add_argument(name)
+    v = sub.add_parser('validate')
+    for name in ('export_csv', 'events_csv', 'npz'):
+        v.add_argument(name)
+    for p in (c, v):
+        p.add_argument('--meta', dest='meta_json', help='meta.json: frames outside periods are dead ball')
+    a = vars(ap.parse_args(argv))
+    cmd = a.pop('cmd')
+    if cmd == 'convert':
+        convert(**a)
+    else:
+        print(json.dumps(validate(**a), indent=1, ensure_ascii=False))
+
+
 if __name__ == '__main__':
-    if sys.argv[1] == 'convert':
-        convert(*sys.argv[2:7])
-    elif sys.argv[1] == 'validate':
-        print(json.dumps(validate(*sys.argv[2:5]), indent=1, ensure_ascii=False))
+    main()
