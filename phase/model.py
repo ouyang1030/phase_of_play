@@ -206,9 +206,10 @@ def loss_fn(out, batch, cfg, class_w):
     dl = (logp[:, 1:] - logp[:, :-1].detach()) ** 2
     l_smooth = dl.clamp(max=16).mean()
 
-    # auxiliary possession (heuristic target, alive frames only)
-    am = batch["alive"]
-    l_poss = (F.binary_cross_entropy_with_logits(out["poss"], batch["poss_ref"], reduction="none") * am).sum() / am.sum().clamp(min=1)
+    # auxiliary possession: annotator possession on labelled frames, or the input possession on alive frames
+    # (train.Data, cfg poss_target)
+    am = batch["poss_mask"]
+    l_poss = (F.binary_cross_entropy_with_logits(out["poss"], batch["poss_tgt"], reduction="none") * am).sum() / am.sum().clamp(min=1)
 
     # view symmetry: p(home view) ~ mirror(p(away view))
     B = logits.shape[0] // 2

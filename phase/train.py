@@ -41,25 +41,42 @@ def boundary_target(label: np.ndarray, sigma: float) -> np.ndarray:
 
 
 class Data:
-    """Holds both views as tensors on CPU; builds window batches."""
+    """Holds both views as tensors on CPU; builds window batches.
+
+    Auxiliary possession target (cfg poss_target): "label" = the annotators' possession, i.e. the frame label is
+    one of the reference team's classes (est_attack, def_to_att; soft labels: q0 + q1), on labelled training
+    frames; "input" = the possession fed to the model (poss_ref: events or tracking heuristic) on alive training
+    frames (the behaviour before 2026-11). cfg poss_input=False drops poss_ref from the context features."""
 
     def __init__(self, views, d, cfg):
         self.T = len(d["label"])
-        use = [i for i, n in enumerate(views[0]["ctx_names"]) if cfg["timer_feat"] or n != "time_since_turnover"]
+        self.poss_target = cfg.get("poss_target", "label")
+        if self.poss_target not in ("label", "input"):
+            raise ValueError(f"poss_target must be 'label' or 'input', got {self.poss_target!r}")
+        use = [i for i, n in enumerate(views[0]["ctx_names"])
+               if (cfg["timer_feat"] or n != "time_since_turnover") and (cfg.get("poss_input", True) or n != "poss_ref")]
+        self.ctx_names = [views[0]["ctx_names"][i] for i in use]
+        self.soft = cfg.get("soft", False)
         self.v = {}
         for r in (0, 1):
             v = views[r]
             g = v["glob"] if cfg["org_block"] else v["glob"][:, :0]
             g = np.concatenate([g, v["ctx"][:, use]], 1)
+            if self.poss_target == "input":
+                tgt, has = v["poss_ref"], d["alive"].astype(bool)
+            elif self.soft:
+                q = d["label_soft"] if r == 0 else d["label_soft"][:, Fe.MIRROR]
+                tgt, has = q[:, 0] + q[:, 1], q.sum(1) > 0
+            else:
+                tgt, has = np.isin(v["label"], (0, 1)), v["label"] >= 0
             self.v[r] = dict(
                 node=torch.from_numpy(v["node"]), pos=torch.from_numpy(v["node_pos"]),
                 valid=torch.from_numpy(v["node_mask"]), glob=torch.from_numpy(g.astype(np.float32)),
                 label=torch.from_numpy(v["label"].astype(np.int64)),
-                poss_ref=torch.from_numpy(v["poss_ref"]),
-                alive=torch.from_numpy(d["alive"].astype(np.float32)),
+                poss_tgt=torch.from_numpy(np.asarray(tgt, np.float32)),
+                poss_mask=torch.from_numpy(np.asarray(has, np.float32)),
                 bnd=torch.from_numpy(boundary_target(v["label"], cfg["bnd_sigma_s"] * float(d["hz"]))),
             )
-        self.soft = cfg.get("soft", False)
         if self.soft:  # npz keys label_soft (T, 4) and label_A / label_B (home view, -1 = not coded)
             sig = cfg["bnd_sigma_s"] * float(d["hz"])
             bnd = 0.5 * (boundary_target(d["label_A"], sig) + boundary_target(d["label_B"], sig))
@@ -81,8 +98,8 @@ class Data:
 
     def batch(self, starts, W, mu, sd, train_mask, device):
         out = {}
-        keys = ("node", "pos", "valid", "glob", "label", "poss_ref", "alive", "bnd") + (("soft",) if self.soft else ()) \
-            + (("mark",) if self.mark else ())
+        keys = ("node", "pos", "valid", "glob", "label", "poss_tgt", "poss_mask", "bnd") \
+            + (("soft",) if self.soft else ()) + (("mark",) if self.mark else ())
         for key in keys:
             xs = [self.v[r][key][s:s + W] for r in (0, 1) for s in starts]
             out[key] = torch.stack(xs)
@@ -94,7 +111,7 @@ class Data:
             out["bnd_mask"] = (out["soft"].sum(-1) > 0).float()
         else:
             out["bnd_mask"] = ((out["label"] >= 0)).float()
-        out["alive"] = out["alive"] * tm.float()
+        out["poss_mask"] = out["poss_mask"] * tm.float()  # training frames only
         return {k: v.to(device) for k, v in out.items()}
 
 
@@ -277,7 +294,7 @@ def print_table(summary):
         print(f"  {k:22s} {np.round(r['f1_per_class'], 3).tolist()}")
 
 
-if __name__ == "__main__":
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--npz", default="artifacts/ajax_psv.npz")
     ap.add_argument("--out", default="artifacts/run_default")
@@ -305,9 +322,17 @@ if __name__ == "__main__":
     ap.add_argument("--events", default=None, help="event_data.csv -> event-based possession")
     ap.add_argument("--soft", action="store_true", help="train on npz label_soft (annotator vote shares)")
     ap.add_argument("--head", default="flat", choices=["flat", "hier"], help="hier: p(possession) x p(organization | possession)")
+    ap.add_argument("--poss_target", default="label", choices=["label", "input"],
+                    help="auxiliary possession target: annotator possession from the labels (default) or the input "
+                         "possession (events / heuristic; runs before 2026-11)")
+    ap.add_argument("--no-poss-input", dest="poss_input", action="store_false",
+                    help="ablation: drop poss_ref from the context features")
     ap.add_argument("--mark", action="store_true", help="add 1:1 marking edges (Hungarian outfield assignment)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")
-    cfg = vars(ap.parse_args())
-    s = run(cfg)
+    return ap
+
+
+if __name__ == "__main__":
+    s = run(vars(parser().parse_args()))
     print_table(s)

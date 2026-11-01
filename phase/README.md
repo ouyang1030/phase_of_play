@@ -22,7 +22,13 @@ from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 a
 | `events.py` | Opta events (databallpy `event_data.csv`) → frames (synced / clock + offset + snap), sync checks (`attrs['sync_report']`), event possession, turnover table (how, where, dead ball) |
 | `hazard.py` | turnover-anchored discrete-time hazard for transition duration (causal features, censoring); timer τ* on heuristic vs event possession; same blocked CV as `train.py` (PLAN §15) |
 
-Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,tcn,none}`.
+Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,tcn,none}`, `--no-poss-input`
+(drops `poss_ref` from the context features only: the node feature `team_poss` and, unless `--no-timer-feat`,
+`time_since_turnover` still come from the input possession).
+
+Auxiliary possession target `--poss_target {label,input}` (default `label`): the possession head learns the
+annotators' possession (label in est_attack / def_to_att of the reference team; soft labels: q0 + q1) on labelled
+training frames. `input` is the old target: the input possession (events or tracking heuristic) on alive frames.
 
 ## Label mapping (reference team = home)
 | CSV `Annotation_Category` | class |
@@ -36,6 +42,11 @@ Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,
 - 2026-11: player slots are stable (before, every slot after a missing player shifted by one for the length of
   the gap, and 2 s velocities were averaged across different players). Old npz files have no `slot_col`;
   `features.build` still accepts them but warns. Re-create the npz files and re-run models before comparing.
+
+## Changes that alter training results
+- 2026-11: the auxiliary possession target is the annotators' possession (`--poss_target label`). All earlier
+  runs (`artifacts/run_full`, `artifacts/adj_v0/deep*`) used the input possession, i.e. `--poss_target input`;
+  re-run with `--poss_target input` to reproduce them.
 
 ## Known limitations (v0)
 - **One match, blocked CV inside it** → same teams in train and test; results are a smoke test, not evidence.
