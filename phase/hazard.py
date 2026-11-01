@@ -174,7 +174,8 @@ def run(cfg):
     hz = float(d["hz"])
     T = len(d["label"])
     ev = Ev.load(cfg["events"], d)
-    poss, to = Ev.possession(ev, T)
+    poss, to = Ev.possession(ev, T, confirm=cfg.get("poss_confirm", "first"))
+    by_confirm = {c: Ev.possession(ev, T, confirm=c) for c in ("first", "second")}  # reported, not used
     poss_heur = Fe.possession(d)
     views = Fe.build(d, poss)
     label = views[0]["label"]
@@ -274,10 +275,13 @@ def run(cfg):
                  for k, v in dur_log.items()}
     m = gt >= 0
     agree = {n: float(((np.nan_to_num(p[L0:L1], nan=0)[m] == 0) == np.isin(gt[m], (0, 1))).mean())
-             for n, p in (("heuristic", poss_heur), ("events", poss))}
+             for n, p in (("heuristic", poss_heur), ("events", poss),
+                          *((f"events_confirm_{c}", pc) for c, (pc, _) in by_confirm.items()))}
     ci = E.bootstrap(gt, {k: preds[k] for k in results}, hz, n_boot=cfg["n_boot"])
     summary = dict(config=cfg, folds=fold_info, possession_label_agreement=agree,
                    n_turnovers=int(len(to)), n_turnovers_dead=int(to.dead.sum()),
+                   turnovers_by_confirm={c: dict(n=int(len(t)), unconfirmed_events=int(t.attrs["unconfirmed"]))
+                                         for c, (_, t) in by_confirm.items()},
                    durations=dur_stats, results=results, ci=ci)
     out = Path(cfg["out"])
     out.mkdir(parents=True, exist_ok=True)
@@ -312,6 +316,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--max_s", type=float, default=30)
     ap.add_argument("--C", type=float, default=0.1)
     ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")
+    ap.add_argument("--poss_confirm", default="first", choices=["first", "second"],
+                    help="event possession: a gain counts at the first controlling event, or only once the gaining "
+                         "team's second controlled action confirms it (codebook §2.4); both are reported")
     return ap
 
 

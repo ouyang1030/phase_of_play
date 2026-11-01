@@ -30,6 +30,12 @@ Auxiliary possession target `--poss_target {label,input}` (default `label`): the
 annotators' possession (label in est_attack / def_to_att of the reference team; soft labels: q0 + q1) on labelled
 training frames. `input` is the old target: the input possession (events or tracking heuristic) on alive frames.
 
+Event possession `--poss_confirm {first,second}` (default `first`, train with `--events` and hazard): `second`
+follows codebook v4.1 §2.4 and counts an open-play gain only once the gaining team's next controlling event (or the
+reception of its completed pass) confirms it; otherwise the touch is a loose ball and possession stays. Changes
+across a dead ball need no confirmation. Both runs report the label agreement of both definitions
+(`possession_label_agreement` in hazard, `possession_label_agreement_by_confirm` in train).
+
 ## Label mapping (reference team = home)
 | CSV `Annotation_Category` | class |
 |---|---|

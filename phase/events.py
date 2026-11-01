@@ -167,24 +167,48 @@ def _controller(row) -> int | None:
     return None
 
 
-def possession(e: pd.DataFrame, T: int) -> tuple[np.ndarray, pd.DataFrame]:
+def _successful_pass(row) -> bool:
+    return row.type == 1 and (row.ok is True or row.ok == "True")
+
+
+def possession(e: pd.DataFrame, T: int, confirm: str = "first") -> tuple[np.ndarray, pd.DataFrame]:
     """Possession per frame (0 home / 1 away, NaN before the first touch) + turnover table.
 
-    Turnover = first controlling event of the other team. Columns of the turnover table:
-    idx, team (new possessor), how (win group), x, y (event location), dead (possession
-    changed across a dead ball: foul/out/corner/goal or a period change; idx is then the
-    stoppage frame, since the restart team owns the ball from there on).
+    confirm="first": turnover = first controlling event of the other team.
+    confirm="second" (codebook v4.1 §2.4): a gain in open play is confirmed only by the gaining team's second
+    controlled action, i.e. its next controlling event is by the same team, or the first event is a successful
+    pass (the teammate's reception is the second action). Otherwise the episode is a loose ball: the event is
+    ignored and the previous possession continues. A confirmed change is still placed at the first event
+    (gain_frame). The first possession and changes across a dead ball (restarts, period starts) need no
+    confirmation.
+
+    Columns of the turnover table: idx, team (new possessor), how (win group), x, y (event location), dead
+    (possession changed across a dead ball: foul/out/corner/goal or a period change; idx is then the stoppage
+    frame, since the restart team owns the ball from there on). attrs["unconfirmed"]: events ignored as loose
+    balls (0 for confirm="first").
     """
+    if confirm not in ("first", "second"):
+        raise ValueError(f"confirm must be 'first' or 'second', got {confirm!r}")
+    rows_in = list(e.itertuples(index=False))
+    ctrl = [_controller(r) for r in rows_in]
+    nxt, following = [None] * len(rows_in), None  # team of the next controlling event
+    for i in range(len(rows_in) - 1, -1, -1):
+        nxt[i] = following
+        if ctrl[i] is not None:
+            following = ctrl[i]
     poss = np.full(T, np.nan)
     cur, last, period, dead_at = None, 0, None, 0  # dead_at: frame the ball went dead, None if live
-    rows = []
-    for r in e.itertuples(index=False):
+    rows, unconfirmed = [], 0
+    for r, c, c_next in zip(rows_in, ctrl, nxt):
         if r.period_id != period:
             period, dead_at = r.period_id, r.idx
         elif r.type in DEAD_BALL and dead_at is None:
             dead_at = r.idx
-        c = _controller(r)
         if c is None:
+            continue
+        if (confirm == "second" and cur is not None and c != cur and dead_at is None
+                and c_next != c and not _successful_pass(r)):  # loose ball: keep the previous possession
+            unconfirmed += 1
             continue
         if cur is not None:
             # across a dead ball the restart team owns the ball from the stoppage on
@@ -198,4 +222,6 @@ def possession(e: pd.DataFrame, T: int) -> tuple[np.ndarray, pd.DataFrame]:
         cur, last, dead_at = c, r.idx, (r.idx + 1 if r.type == GOAL else None)
     if cur is not None:
         poss[last:] = cur
-    return poss, pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["unconfirmed"] = unconfirmed
+    return poss, out

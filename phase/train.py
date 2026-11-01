@@ -150,9 +150,12 @@ def run(cfg):
     d = dict(np.load(cfg["npz"]))
     hz = float(d["hz"])
     if cfg["events"]:  # Opta events synced to tracking (phase.events)
-        poss, turnovers = Ev.possession(Ev.load(cfg["events"], d), len(d["label"]))
+        ev = Ev.load(cfg["events"], d)
+        poss, turnovers = Ev.possession(ev, len(d["label"]), confirm=cfg.get("poss_confirm", "first"))
+        poss_by_confirm = {c: Ev.possession(ev, len(d["label"]), confirm=c)[0] for c in ("first", "second")}
     else:
         poss, turnovers = Fe.possession(d, min_run_s=cfg["poss_min_run_s"]), None
+        poss_by_confirm = {}
     views = Fe.build(d, poss, mark=cfg["mark"])
     data = Data(views, d, cfg)
     label = views[0]["label"]
@@ -270,12 +273,15 @@ def run(cfg):
     ph = np.nan_to_num(poss_home[L0:L1], nan=0)
     m = gt >= 0
     poss_agree = float(((ph[m] == 0) == np.isin(gt[m], (0, 1))).mean())
+    poss_agree_events = {c: float(((np.nan_to_num(p[L0:L1], nan=0)[m] == 0) == np.isin(gt[m], (0, 1))).mean())
+                         for c, p in poss_by_confirm.items()}  # both event definitions (codebook §2.4)
 
     out_dir = Path(cfg["out"])
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_dir / "oof.npz", probs=oof, bnd=oof_bnd, gt=gt, hsmm=pred_hsmm,
                         timer_star=pred_timer_star, poss_home=poss_home[L0:L1], alive=d["alive"][L0:L1], hz=hz)
     summary = dict(config=cfg, folds=fold_info, possession_label_agreement=poss_agree,
+                   possession_label_agreement_by_confirm=poss_agree_events,
                    elapsed_s=time.time() - t_start, results=results, ci=ci)
     (out_dir / "results.json").write_text(json.dumps(summary, indent=2))
     return summary
@@ -289,6 +295,9 @@ def print_table(summary):
     r = next(iter(summary["results"].values()))
     print(f"GT boundaries: {r['n_gt_boundaries']} | labeled frames: {r['n_frames']} | "
           f"possession ({'events' if summary['config'].get('events') else 'heuristic'}) agrees with labels on {summary['possession_label_agreement']:.1%} of frames")
+    if summary.get("possession_label_agreement_by_confirm"):
+        print("event possession agreement by confirmation:",
+              {k: round(v, 3) for k, v in summary["possession_label_agreement_by_confirm"].items()})
     print("per-class F1 [est_att, def->att, est_def, att->def]:")
     for k, r in summary["results"].items():
         print(f"  {k:22s} {np.round(r['f1_per_class'], 3).tolist()}")
@@ -330,6 +339,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--mark", action="store_true", help="add 1:1 marking edges (Hungarian outfield assignment)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")
+    ap.add_argument("--poss_confirm", default="first", choices=["first", "second"],
+                    help="with --events: a gain counts at the first controlling event, or only once the gaining "
+                         "team's second controlled action confirms it (codebook §2.4); both are reported")
     return ap
 
 
