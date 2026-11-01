@@ -37,6 +37,7 @@ ORG_CORE = [
     "ref_vx_mean", "cen_dx", "press_on_ref", "ball_ndiff_10", "ball_dmin_opp",
 ]
 QUANTILES = np.round(np.arange(0.2, 0.81, 0.05), 2)
+TAUS = [float(t) for t in np.arange(1, 20.5, 0.5)]
 FEATURE_SETS = {
     "hazard_time": ("time",),
     "hazard_ctx": ("time", "ctx"),
@@ -161,8 +162,7 @@ def durations(cdf, q):
 
 def decode(poss_home, to, dur_steps, step, t_end):
     """Frame labels: established of possessor, transition for dur_steps after each turnover."""
-    p = np.nan_to_num(poss_home, nan=0.0)
-    pred = np.where(p == 0, 0, 2)
+    pred = E.established(poss_home)
     for i, n in dur_steps.items():
         t0 = int(to.idx.iat[i])
         pred[t0:min(t0 + n * step, t_end[i])] = 1 if to.team.iat[i] == 0 else 3
@@ -195,7 +195,14 @@ def run(cfg):
             t_end[i] = t0 + pc[0]
     max_steps = np.maximum((t_end - t0s) // step, 0)
 
-    preds = {k: np.zeros(L1 - L0, int) for k in ["timer_tau*_heur", "timer_tau*", "timer_tau*_live", *FEATURE_SETS]}
+    alive = d["alive"].astype(bool)
+    timers = {  # name -> (possession, turnover table, grid of (tau, cut at dead ball, live only))
+        "timer_tau*_heur": (poss_heur, None, [(tau, False, False) for tau in TAUS]),
+        "timer_tau*": (poss, to, [(tau, False, False) for tau in TAUS]),
+        "timer_tau*_live": (poss, to, [(tau, False, True) for tau in TAUS]),
+        "timer_tau*_grid": (poss, to, [(tau, cut, live) for tau in TAUS for cut in (False, True) for live in (False, True)]),
+    }
+    preds = {k: np.zeros(L1 - L0, int) for k in [*timers, *FEATURE_SETS]}
     dur_log = {k: [] for k in FEATURE_SETS}
     fold_info = []
     for f in range(cfg["folds"]):
@@ -205,17 +212,18 @@ def run(cfg):
         train_mask[max(L0, a - buf):min(L1, b + buf)] = False
         tr_label = np.where(train_mask, label, -1)[L0:L1]
 
-        # strongest timer: tau (and whether dead-ball turnovers open a transition) tuned on train
+        # strongest timer: tau (and whether a stoppage ends the window / dead-ball turnovers open one) tuned on train
         info = dict(fold=f, block=[int(a), int(b)])
-        for name, p, live in (("timer_tau*_heur", poss_heur, False), ("timer_tau*", poss, False), ("timer_tau*_live", poss, True)):
+        for name, (p, tt, grid) in timers.items():
             best = (-1, None)
-            for tau in np.arange(1, 20.5, 0.5):
-                tp = timer_from_turnovers(p, to if name != "timer_tau*_heur" else None, tau, hz, live)[L0:L1]
-                f1 = E.evaluate(tr_label, tp, hz)["macro_f1"]
+            for tau, cut, live in grid:
+                tp = E.timer_baseline(p, tau, hz, alive if cut else None, tt, live)[L0:L1]
+                f1 = E.macro_f1(tr_label, tp)
                 if f1 > best[0]:
-                    best = (f1, float(tau))
-            info[name] = best[1]
-            preds[name][a - L0:b - L0] = timer_from_turnovers(p, to if name != "timer_tau*_heur" else None, best[1], hz, live)[L0:L1][a - L0:b - L0]
+                    best = (f1, (tau, cut, live))
+            tau, cut, live = best[1]
+            info[name] = tau if name != "timer_tau*_grid" else dict(tau=tau, cut_at_dead_ball=cut, live_only=live)
+            preds[name][a - L0:b - L0] = E.timer_baseline(p, tau, hz, alive if cut else None, tt, live)[L0:L1][a - L0:b - L0]
 
         targets = episode_targets(to, label, period, hz, train_mask, cfg["max_s"])
         train_eps = [i for i in range(len(to)) if train_mask[t0s[i]] and targets[i][1] > 0]
@@ -244,7 +252,8 @@ def run(cfg):
                     dur_log[name].append((e_ * DT_S, dur[i] * DT_S))
         info["n_train_episodes"] = len(train_eps)
         fold_info.append(info)
-        print(f"fold {f}: tau*={info['timer_tau*']}s (live {info['timer_tau*_live']}s, heur {info['timer_tau*_heur']}s) "
+        print(f"fold {f}: tau*={info['timer_tau*']}s (live {info['timer_tau*_live']}s, heur {info['timer_tau*_heur']}s, "
+              f"grid {info['timer_tau*_grid']}) "
               f"| train episodes {len(train_eps)}, rows {info['hazard_org_core']['n_rows']}, "
               f"ends {info['hazard_org_core']['n_events']} | q " + str({k: info[k]['q'] for k in FEATURE_SETS}), flush=True)
 
@@ -276,22 +285,6 @@ def run(cfg):
                         **{k.replace("*", "star").replace(" ", "_"): v for k, v in preds.items()})
     to.to_csv(out / "turnovers.csv", index=False)
     return summary
-
-
-def timer_from_turnovers(poss_home, to, tau_s, hz, live_only=False):
-    """L_fix(tau). With a turnover table, dead-ball turnovers can be skipped (live_only)."""
-    if to is None:
-        return E.timer_baseline(poss_home, tau_s, hz)
-    p = np.nan_to_num(poss_home, nan=0.0)
-    pred = np.where(p == 0, 0, 2)
-    n = int(round(tau_s * hz))
-    t0s = to.idx.to_numpy()
-    nxt = np.r_[t0s[1:], len(p)]
-    for (t0, w, dead), t1 in zip(to[["idx", "team", "dead"]].itertuples(index=False), nxt):
-        if live_only and dead:
-            continue
-        pred[t0:min(t0 + n, t1)] = 1 if w == 0 else 3
-    return pred
 
 
 def print_table(s):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from sklearn.metrics import f1_score, cohen_kappa_score
 
 K = 4
@@ -9,14 +10,53 @@ TRANSITIONS = (1, 3)
 
 
 # ---------------------------------------------------------------- baselines / decoding
-def timer_baseline(poss_home: np.ndarray, tau_s: float, hz: float) -> np.ndarray:
-    """L_fix(tau): turnover + fixed window -> transition, otherwise established of possessor."""
-    p = np.nan_to_num(poss_home, nan=0.0)  # 0 = home in possession
+def fill_possession(poss_home: np.ndarray) -> np.ndarray:
+    """Possession per frame without NaN: frames before the first touch take the first possessor (back-fill);
+    any later gap keeps the previous possessor; no possession at all -> home (0)."""
+    return pd.Series(np.asarray(poss_home, float)).bfill().ffill().fillna(0.0).to_numpy()
+
+
+def established(poss_home: np.ndarray) -> np.ndarray:
+    """Established class of the possessor: 0 (est_attack) where home has the ball, 2 (est_defense) otherwise."""
+    return np.where(fill_possession(poss_home) == 0, 0, 2)
+
+
+def timer_baseline(poss_home: np.ndarray, tau_s: float, hz: float, alive: np.ndarray | None = None,
+                   turnovers: pd.DataFrame | None = None, live_only: bool = False) -> np.ndarray:
+    """L_fix(tau): a turnover opens a transition of the new possessor for tau s, otherwise established of possessor.
+
+    Turnovers are the changes of `poss_home` (NaN before the first touch is back-filled, so the first touch is no
+    turnover) or, if given, the rows of an event turnover table (columns idx, team, dead; phase.events.possession).
+    The window of a turnover at t0 is [t0, min(t0 + n, next turnover, next dead ball)), n = round(tau_s * hz).
+    The dead-ball cut applies only with `alive`: it is the first frame after t0 where the ball goes from alive to
+    dead, so a turnover at a stoppage (table column dead) keeps its window through that stoppage.
+    live_only (needs `turnovers`): turnovers across a dead ball open no transition (the next turnover still cuts
+    the window before them).
+    """
+    p = fill_possession(poss_home)
+    T = len(p)
     pred = np.where(p == 0, 0, 2)
-    chg = np.flatnonzero(np.diff(p) != 0) + 1
     n = int(round(tau_s * hz))
-    for t in chg:
-        pred[t:t + n] = 1 if p[t] == 0 else 3
+    if turnovers is None:
+        if live_only:
+            raise ValueError("live_only needs the event turnover table (dead-ball flag)")
+        t0s = np.flatnonzero(np.diff(p) != 0) + 1
+        team, dead = p[t0s].astype(int), np.zeros(len(t0s), bool)
+    elif len(turnovers):
+        t0s = turnovers["idx"].to_numpy(int)
+        team, dead = turnovers["team"].to_numpy(int), turnovers["dead"].to_numpy(bool)
+    else:
+        return pred
+    t1s = np.r_[t0s[1:], T]
+    if alive is not None:
+        a = np.asarray(alive, bool)
+        onset = np.flatnonzero(a[:-1] & ~a[1:]) + 1  # first dead frame of each stoppage
+        k = np.searchsorted(onset, t0s, side="right")
+        t1s = np.minimum(t1s, np.r_[onset, T][k])
+    for t0, t1, w, dd in zip(t0s, t1s, team, dead):
+        if live_only and dd:
+            continue
+        pred[t0:min(t0 + n, t1)] = 1 if w == 0 else 3
     return pred
 
 
@@ -260,6 +300,15 @@ def boundary_refine(probs: np.ndarray, bnd: np.ndarray, thr: float = 0.5,
 
 
 # ---------------------------------------------------------------- metrics
+def macro_f1(gt: np.ndarray, pr: np.ndarray) -> float:
+    """Macro F1 over the K classes on frames gt >= 0 (= evaluate()['macro_f1'], without the boundary metrics)."""
+    m = gt >= 0
+    C = np.bincount(gt[m].astype(int) * K + pr[m].astype(int), minlength=K * K).reshape(K, K)
+    tp = np.diag(C).astype(float)
+    den = 2 * tp + (C.sum(0) - tp) + (C.sum(1) - tp)
+    return float(np.mean(np.where(den > 0, 2 * tp / np.maximum(den, 1), 0.0)))
+
+
 def segments(y: np.ndarray, max_gap: int = 0):
     """Contiguous runs of the same label (>= 0): list of (start, end, class)."""
     out = []

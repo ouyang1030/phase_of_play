@@ -133,9 +133,9 @@ def run(cfg):
     d = dict(np.load(cfg["npz"]))
     hz = float(d["hz"])
     if cfg["events"]:  # Opta events synced to tracking (phase.events)
-        poss, _ = Ev.possession(Ev.load(cfg["events"], d), len(d["label"]))
+        poss, turnovers = Ev.possession(Ev.load(cfg["events"], d), len(d["label"]))
     else:
-        poss = Fe.possession(d, min_run_s=cfg["poss_min_run_s"])
+        poss, turnovers = Fe.possession(d, min_run_s=cfg["poss_min_run_s"]), None
     views = Fe.build(d, poss, mark=cfg["mark"])
     data = Data(views, d, cfg)
     label = views[0]["label"]
@@ -146,6 +146,14 @@ def run(cfg):
     W = int(cfg["window_s"] * hz)
     buf = int(cfg["buffer_s"] * hz)
     edges = np.linspace(L0, L1, cfg["folds"] + 1).astype(int)
+
+    # timer tau*: tau, cut at the next dead ball, and (event turnovers only) skip dead-ball turnovers, tuned per fold
+    alive = d["alive"].astype(bool)
+    timer_grid = [(float(tau), cut, live) for tau in np.arange(1, 20.5, 0.5) for cut in (False, True)
+                  for live in ((False, True) if turnovers is not None else (False,))]
+
+    def timer(tau, cut, live):
+        return E.timer_baseline(poss_home, tau, hz, alive if cut else None, turnovers, live)[L0:L1]
 
     oof = np.zeros((L1 - L0, 4))
     oof_bnd = np.zeros(L1 - L0)
@@ -218,19 +226,20 @@ def run(cfg):
 
         # --- per-fold tuned baselines / decoders (fit on training labels only)
         tr_label = np.where(train_mask, label, -1)[L0:L1]
-        best_tau, best_f1 = None, -1
-        for tau in np.arange(1, 20.5, 0.5):
-            tp = E.timer_baseline(poss_home[L0:L1], tau, hz)
-            f1 = E.evaluate(tr_label, tp, hz)["macro_f1"]
+        best, best_f1 = None, -1
+        for setting in timer_grid:
+            f1 = E.macro_f1(tr_label, timer(*setting))
             if f1 > best_f1:
-                best_tau, best_f1 = float(tau), f1
-        pred_timer_star[a - L0:b - L0] = E.timer_baseline(poss_home[L0:L1], best_tau, hz)[a - L0:b - L0]
+                best, best_f1 = setting, f1
+        pred_timer_star[a - L0:b - L0] = timer(*best)[a - L0:b - L0]
         hp = E.fit_hsmm(tr_label, hz)
         seg_logp = np.log(probs[a - lo:b - lo] + 1e-6)
         pred_hsmm[a - L0:b - L0] = E.hsmm_decode(seg_logp, hp, cfg["switch_penalty"])
-        fold_info.append(dict(fold=f, block=[int(a), int(b)], tau_star=best_tau, hsmm_min_d_s=(hp["min_d"] / hz).round(2).tolist(),
+        fold_info.append(dict(fold=f, block=[int(a), int(b)], tau_star=best[0], timer_cut_at_dead_ball=best[1],
+                              timer_live_only=best[2], hsmm_min_d_s=(hp["min_d"] / hz).round(2).tolist(),
                               n_train_windows=int(len(starts_all))))
-        print(f"fold {f}: tau*={best_tau}s  hsmm min_d={fold_info[-1]['hsmm_min_d_s']}", flush=True)
+        print(f"fold {f}: tau*={best[0]}s (cut at dead ball {best[1]}, live only {best[2]})  "
+              f"hsmm min_d={fold_info[-1]['hsmm_min_d_s']}", flush=True)
 
     gt = label[L0:L1]
     pred_arg = oof.argmax(1)
@@ -241,7 +250,7 @@ def run(cfg):
         "model_hsmm": E.evaluate(gt, pred_hsmm, hz),
     }
     for tau in (3, 5, 6, 9.34):
-        results[f"timer_{tau}s"] = E.evaluate(gt, E.timer_baseline(poss_home[L0:L1], tau, hz), hz)
+        results[f"timer_{tau}s"] = E.evaluate(gt, E.timer_baseline(poss_home, tau, hz)[L0:L1], hz)
     # possession heuristic quality vs labels (est_attack/def_to_att = home in possession)
     ph = np.nan_to_num(poss_home[L0:L1], nan=0)
     m = gt >= 0
