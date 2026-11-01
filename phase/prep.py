@@ -53,6 +53,20 @@ def _first(val: str) -> str:
     return val.split(";")[0].strip()
 
 
+PLAYER_COL = re.compile(r"(home|away)_(home|away)_(\d+)_([xy])", re.IGNORECASE)
+
+
+def canonical_column(name: str) -> str:
+    """Fused-CSV column name as phase expects it: trailing ';' / blanks removed (a provider export ends its header
+    with 'Annotation_Notes;;;;') and player columns as 'home_home_26_X' whatever their case ('home_Home_26_x')."""
+    name = str(name).strip().rstrip(";").strip()
+    m = PLAYER_COL.fullmatch(name)
+    if m and m.group(1).lower() == m.group(2).lower():
+        team = m.group(1).lower()
+        return f"{team}_{team}_{m.group(3)}_{m.group(4).upper()}"
+    return name
+
+
 def _player_cols(columns, team):
     xs = [c for c in columns if re.fullmatch(rf"{team}_{team}_\d+_X", c)]
     return xs, [c[:-1] + "Y" for c in xs]
@@ -210,6 +224,11 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
     Warns if, on frames with the ball in play, a team has no or several goalkeepers on more than max_gk_bad of them.
     """
     df = pd.read_csv(csv_path, low_memory=False)
+    new = [canonical_column(c) for c in df.columns]
+    dup = sorted({c for c in new if new.count(c) > 1})
+    if dup:
+        raise ValueError(f"{csv_path}: columns {dup} appear more than once after normalising case / ';'")
+    df.columns = new
     T0 = len(df)
 
     team_xy, team_cols = [], []
@@ -220,7 +239,7 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
 
     # periods: provider column if present, else player-free breaks
     n_on = sum((~np.isnan(xy[..., 0])).sum(1) for xy in team_xy)
-    pcol = next((c for c in df.columns if c.strip().rstrip(";").lower() in ("period_id", "period")), None)
+    pcol = next((c for c in df.columns if c.lower() in ("period_id", "period")), None)
     period = detect_periods(n_on, None if pcol is None else df[pcol].to_numpy(), SRC_HZ, min_break_s, min_period_s)
     n_per = int(period.max())
 

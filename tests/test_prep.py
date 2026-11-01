@@ -109,3 +109,37 @@ def test_unfilled_period_column_falls_back_to_breaks(tmp_path):
         d = load(tmp_path, T=1000, empty=[(450, 550)], flip_from=550, period_col=np.zeros(1000))
     assert (d["period"][:225] == 1).all() and (d["period"][275:] == 2).all()
     assert d["attack_sign"][1] == 1 and d["attack_sign"][2] == -1
+
+
+# ---------------------------------------------------------------- column names (provider export)
+def test_column_case_and_trailing_semicolons_are_normalised(tmp_path):
+    import pandas as pd
+    path = fused_csv(tmp_path / "fused.csv", T=300, drop={(1, 4): [(100, 150)]})
+    df = pd.read_csv(path)
+    ren = {c: c.replace("home_home", "home_Home").replace("away_away", "away_Away") for c in df.columns}
+    ren = {k: (v[:-1] + v[-1].lower() if k.startswith("home") else v) for k, v in ren.items()}  # home_Home_3_x
+    df = df.rename(columns=ren).rename(columns={df.columns[-1]: df.columns[-1] + ";;;;"})
+    assert "home_Home_3_x" in df.columns and "away_Away_3_Y" in df.columns
+    df.to_csv(tmp_path / "provider.csv", index=False)
+    a, b = prep.load(path, **FAST), prep.load(tmp_path / "provider.csv", **FAST)
+    assert set(a) == set(b)
+    for k in a:
+        assert np.array_equal(a[k], b[k], equal_nan=a[k].dtype.kind == "f"), k
+
+
+def test_canonical_column():
+    assert prep.canonical_column("home_Home_26_x") == "home_home_26_X"
+    assert prep.canonical_column("AWAY_away_7_Y ") == "away_away_7_Y"
+    assert prep.canonical_column("Annotation_Notes;;;;") == "Annotation_Notes"
+    assert prep.canonical_column("home_away_3_X") == "home_away_3_X"  # not a player column: left alone
+    assert prep.canonical_column("Ball_X") == "Ball_X"
+
+
+def test_columns_that_collide_after_normalising_raise(tmp_path):
+    import pandas as pd
+    path = fused_csv(tmp_path / "fused.csv", T=100)
+    df = pd.read_csv(path)
+    df["home_Home_1_X"] = df["home_home_1_X"]
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="more than once"):
+        prep.load(path, **FAST)
