@@ -80,3 +80,40 @@ def events_csv(path, rows, t0="2024-01-01T12:00:00Z"):
                         tracking_frame=r.get("frame", -999), original_event=r.get("name", "pass")))
     pd.DataFrame(out).to_csv(path, index=False)
     return path
+
+
+def meta_json(path, home=("Ajax", 10), away=("PSV", 20), period_start=None, **kw):
+    """meta.json as written by notebooks/preprocessing.ipynb (phase.meta)."""
+    import json
+    m = dict(match_id="m1", home_team=dict(name=home[0], id=home[1]), away_team=dict(name=away[0], id=away[1]),
+             period_start_frame={str(k): v for k, v in (period_start or {1: 0, 2: 400}).items()},
+             pitch=dict(length=105.0, width=68.0), frame_rate=25.0, **kw)
+    path.write_text(json.dumps(m))
+    return path
+
+
+def adj_dir(path, T25=800):
+    """Codebook-v1 adjudication dir (as codebook_v1.convert + make_pack write it) for a 32 s match at 25 Hz.
+
+    Coder A: IP [0, 300), TD [300, 400), OP [400, 800); coder B: IP [0, 320), TD [320, 450), OP [450, 800);
+    the ball is dead on [600, 650). Disagreements [300, 320) and [400, 450) are the clips c000 and c001."""
+    import json
+    A = np.r_[np.zeros(300), np.full(100, 3), np.full(T25 - 400, 2)].astype(int)
+    B = np.r_[np.zeros(320), np.full(130, 3), np.full(T25 - 450, 2)].astype(int)
+    alive = np.ones(T25, bool)
+    alive[600:650] = False
+    A[~alive] = B[~alive] = 5
+    final = np.where(A == B, A, -9)
+    src = np.where(A == B, "agree", "pending").astype(object)
+    src[~alive] = "inactive"
+    path.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"Frame": np.arange(T25), "alive": alive.astype(int), "A": A, "B": B, "final": final,
+                  "src": src}).to_csv(path / "labels_v1_25hz.csv", index=False)
+    pd.DataFrame([dict(clip_id="c000", start=300, end=319, dur_s=0.8, type="BOUNDARY", A="TD@300", B="IP@300"),
+                  dict(clip_id="c001", start=400, end=449, dur_s=2.0, type="BOUNDARY", A="OP@400", B="TD@400")]
+                 ).to_csv(path / "clips.csv", index=False)
+    pd.DataFrame([dict(onset=0, end=600, kind="kickoff", team=0, x_att=0.0, zone="middle", set_piece=False),
+                  dict(onset=650, end=T25, kind="throw_in", team=1, x_att=0.0, zone="middle", set_piece=False)]
+                 ).to_csv(path / "restarts.csv", index=False)
+    (path / "key_DO_NOT_SHARE.json").write_text(json.dumps({"R1": "A", "R2": "B", "seed": 0}))
+    return path

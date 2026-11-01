@@ -296,8 +296,8 @@ def print_table(summary):
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--npz", default="artifacts/ajax_psv.npz")
-    ap.add_argument("--out", default="artifacts/run_default")
+    ap.add_argument("--npz", required=True, help="phase.prep / apply_decisions npz")
+    ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=4)

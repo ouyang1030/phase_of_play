@@ -259,12 +259,12 @@ def run(cfg):
 
     gt = label[L0:L1]
     results = {k: E.evaluate(gt, v, hz) for k, v in preds.items()}
-    ref = Path(cfg["deep_oof"])
-    if ref.exists():
-        o = np.load(ref)
-        if len(o["gt"]) == len(gt):
-            results["deep_hsmm (run_full, heur poss)"] = E.evaluate(gt, o["hsmm"], hz)
-            preds["deep_hsmm (run_full, heur poss)"] = o["hsmm"]
+    if cfg.get("deep_oof"):
+        o = np.load(cfg["deep_oof"])
+        if len(o["gt"]) != len(gt) or not np.array_equal(o["gt"], gt):
+            raise ValueError(f"{cfg['deep_oof']}: labels differ from {cfg['npz']}")
+        results["deep_hsmm"] = E.evaluate(gt, o["hsmm"], hz)
+        preds["deep_hsmm"] = o["hsmm"]
     # atypical slice: frames the best event timer gets wrong (§6 D.3)
     hard = (preds["timer_tau*"] != gt) & (gt >= 0)
     for k in results:
@@ -301,16 +301,19 @@ def print_table(s):
     print("duration on uncensored test episodes:", json.dumps(s["durations"]))
 
 
-if __name__ == "__main__":
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--npz", default="artifacts/ajax_psv.npz")
+    ap.add_argument("--npz", required=True, help="phase.prep / apply_decisions npz")
     ap.add_argument("--events", required=True)
-    ap.add_argument("--out", default="artifacts/hazard")
-    ap.add_argument("--deep_oof", default="artifacts/run_full/oof.npz")
+    ap.add_argument("--out", required=True, help="output directory")
+    ap.add_argument("--deep_oof", default=None, help="phase.train oof.npz on the same labels: adds its HSMM row")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--buffer_s", type=float, default=15)
     ap.add_argument("--max_s", type=float, default=30)
     ap.add_argument("--C", type=float, default=0.1)
     ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")
-    cfg = vars(ap.parse_args())
-    print_table(run(cfg))
+    return ap
+
+
+if __name__ == "__main__":
+    print_table(run(vars(parser().parse_args())))

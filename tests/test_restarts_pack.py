@@ -41,3 +41,11 @@ def test_clock_handles_extra_time():
     start = {1: 0, 2: 100_000, 3: 200_000}
     assert make_pack.clock(100_000 + 25 * 60, start) == (2, "46:00")
     assert make_pack.clock(200_000, start) == (3, "90:00")
+
+
+def test_clock_in_a_break_counts_down_to_the_next_kickoff():
+    start, end = {1: 0, 2: 95369}, {1: 69023, 2: 168828}
+    assert make_pack.clock(94246, start, end) == (2, "-00:44")  # ball 'alive' during half-time
+    assert make_pack.clock(95369 + 25 * 77, start, end) == (2, "46:17")
+    assert make_pack.clock(69000, start, end) == (1, "46:00")
+    assert make_pack.clock(94246, start) == (1, "62:49")  # without period ends

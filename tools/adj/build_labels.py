@@ -88,7 +88,3 @@ for name, lab in (('adj', final), ('A', np.where(ca >= 0, ca, -1)), ('B', np.whe
     dd['sub'] = np.where(dd['label'] >= 0, d['sub'], -1).astype(np.int8)
     np.savez_compressed(OUT / f'ajax_psv_full_{name}.npz', **dd)
     print(name, 'labeled @12.5Hz', int((dd['label'] >= 0).sum()), 'last', int(np.flatnonzero(dd['label'] >= 0)[-1]))
-old_npz = Path(__file__).resolve().parents[2] / 'artifacts' / 'ajax_psv.npz'
-if old_npz.exists():  # sanity check against the earlier single-annotator npz
-    old = np.load(old_npz)
-    print('tracking vs old npz: pos equal', np.allclose(np.nan_to_num(old['pos']), np.nan_to_num(d['pos'])), ' ball max diff', float(np.abs(old['ball'] - d['ball']).max()))

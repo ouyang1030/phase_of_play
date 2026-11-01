@@ -99,8 +99,17 @@ def test_loss_uses_the_target_on_masked_frames_only(match):
     assert loss_fn(out, b, cfg, torch.ones(4))[1]["poss"] == pytest.approx(np.log(2), rel=1e-6)
 
 
+IO = ["--npz", "m.npz", "--out", "run"]
+
+
 def test_cli_defaults_and_flags_go_into_the_config():
-    cfg = vars(train.parser().parse_args([]))
+    cfg = vars(train.parser().parse_args(IO))
     assert cfg["poss_target"] == "label" and cfg["poss_input"] is True
-    cfg = vars(train.parser().parse_args(["--poss_target", "input", "--no-poss-input"]))
+    cfg = vars(train.parser().parse_args(IO + ["--poss_target", "input", "--no-poss-input"]))
     assert cfg["poss_target"] == "input" and cfg["poss_input"] is False
+
+
+@pytest.mark.parametrize("args", [[], ["--npz", "m.npz"], ["--out", "run"]])
+def test_npz_and_out_are_required(args):
+    with pytest.raises(SystemExit):
+        train.parser().parse_args(args)

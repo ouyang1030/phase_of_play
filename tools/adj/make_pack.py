@@ -5,7 +5,10 @@ Per clip: label timelines of R1 and R2 with events (PNG) and an optional 2D anim
 No model features are shown. For clips that touch a set piece, the end frame suggested by the SET_PIECE rule is
 added as a reference.
 
-  python tools/adj/make_pack.py ADJ_DIR NPZ EVENTS_CSV PACK_DIR [--seed N] [--anim]
+  python tools/adj/make_pack.py ADJ_DIR NPZ EVENTS_CSV PACK_DIR --meta META_JSON [--seed N] [--anim]
+
+Team names, the event team_id of the home team and the kick-off frames for the match clock come from meta.json
+(phase.meta; tracking team 0 = home = the labels' reference team).
 """
 import argparse
 import json
@@ -19,22 +22,27 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from phase import events as Ev  # noqa: E402
+from phase import meta as M  # noqa: E402
 from phase.prep import home_attack_sign  # noqa: E402
 import codebook_v1 as C  # noqa: E402
 
 FPS, CTX = 25, 5 * 25
 COLORS = {0: '#1b7837', 1: '#a6dba0', 2: '#762a83', 3: '#f1a340', C.SP: '#4393c3', C.INACTIVE: '#bdbdbd',
           C.UNCODED: '#ffffff'}
-TEAMS = ('Ajax', 'PSV')  # tracking team 0 = home = Ajax (labels are from Ajax's perspective)
-
-
 PERIOD_OFFSET_MIN = {1: 0, 2: 45, 3: 90, 4: 105, 5: 120}
 
 
-def clock(frame, period_start):
-    """(period, 'mm:ss' match clock) of a 25 Hz frame; period_start maps period -> first frame."""
+def clock(frame, period_start, period_end=None):
+    """(period, 'mm:ss' match clock) of a 25 Hz frame; period_start / period_end map period -> kick-off / last frame.
+    A frame after the end of its period and before the next kick-off (a break) is given as '-mm:ss' before that
+    kick-off."""
     started = [p for p, f in period_start.items() if frame >= f]
     p = max(started) if started else min(period_start)
+    later = [q for q in period_start if q > p]
+    if period_end and p in period_end and frame > period_end[p] and later:
+        q = min(later)
+        t = (period_start[q] - frame) / FPS
+        return q, f'-{int(t // 60):02d}:{int(t % 60):02d}'
     t = max(frame - period_start[p], 0) / FPS + 60 * PERIOD_OFFSET_MIN.get(p, 0)
     return p, f'{int(t // 60):02d}:{int(t % 60):02d}'
 
@@ -93,7 +101,7 @@ def timeline_png(path, clip, lab1, lab2, alive, ev, lo, hi, sp_end, title):
     plt.close(fig)
 
 
-def anim_mp4(path, d, lab1, lab2, lo, hi, clip, title, step):
+def anim_mp4(path, d, lab1, lab2, lo, hi, clip, title, step, teams):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -129,7 +137,7 @@ def anim_mp4(path, d, lab1, lab2, lo, hi, clip, title, step):
             ball.set_offsets(d['ball'][i, :2][None])
             cur.set_xdata([f - lo])
             head.set_text(f'{title}   frame {f}' + ('   [dead ball]' if not d['alive'][i] else ''))
-            direction.set_text(f"{TEAMS[0]} (blue) attacks {'→' if home_attack_sign(d, i) > 0 else '←'}")
+            direction.set_text(f"{teams[0]} (blue) attacks {'→' if home_attack_sign(d, i) > 0 else '←'}")
             writer.grab_frame()
     plt.close(fig)
 
@@ -143,7 +151,8 @@ already agreed and must not change.
 
 ## What to look at
 - The match video at the given frame / clock (frames are 25 Hz frame numbers of the fused CSV, as in the
-  annotation tool), from `view_from` to `view_to` (5 s of context on each side).
+  annotation tool), from `view_from` to `view_to` (5 s of context on each side). A negative clock is the time
+  before that period's kick-off (e.g. ball tracked as alive during half-time).
 - `timelines/<clip_id>.png`: R1 and R2 labels, dead-ball periods (grey) and on-ball events.
 - `anim/<clip_id>.mp4` (if present): 2D animation from tracking with both timelines and a cursor.
 - Do **not** use any computed organisation metrics (they are model inputs).
@@ -184,10 +193,15 @@ cannot be picked; use OTHER.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('adj_dir'); ap.add_argument('npz'); ap.add_argument('events'); ap.add_argument('pack')
+    ap.add_argument('--meta', required=True, help='meta.json of the match (notebooks/preprocessing.ipynb)')
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--anim', action='store_true')
     a = ap.parse_args()
     adj, pack = Path(a.adj_dir), Path(a.pack)
+    meta = M.load(a.meta)
+    if float(meta['frame_rate']) != FPS:
+        sys.exit(f"{a.meta}: frame_rate {meta['frame_rate']} Hz, but the pack works on the {FPS} Hz fused CSV")
+    teams = M.teams(meta)
     (pack / 'timelines').mkdir(parents=True, exist_ok=True)
     seed = a.seed if a.seed is not None else random.SystemRandom().randrange(10 ** 6)
     flip = random.Random(seed).random() < 0.5
@@ -202,20 +216,20 @@ def main():
     rs = pd.read_csv(adj / 'restarts.csv')
     d = dict(np.load(a.npz))
     step = int(round(FPS / float(d['hz'])))
-    e = Ev.load(a.events, d)
+    e = Ev.load(a.events, d, home_team_id=meta['home_team']['id'])
     lab = {'A': L.A.to_numpy(), 'B': L.B.to_numpy()}
     r1, r2 = lab[key['R1']], lab[key['R2']]
     alive = L.alive.to_numpy().astype(bool)
-    per = d['period']
-    period_start = {int(p): int(np.flatnonzero(per == p)[0]) * step for p in np.unique(per) if p > 0}
+    period_start = meta['period_start_frame']  # kick-off frames (25 Hz rows of the fused CSV)
+    period_end = meta.get('period_end_frame')  # optional: frames in a break get '-mm:ss' before the next kick-off
 
     sp = rs[rs.set_piece].copy()
     sp['rule_end'] = [sp_rule_end(r, e, d, step) for r in sp.itertuples()]
     rows = []
     for c in clips.itertuples():
         lo, hi = max(c.start - CTX, 0), min(c.end + 1 + CTX, len(L))
-        p, t0 = clock(c.start, period_start)
-        _, t1 = clock(c.end, period_start)
+        p, t0 = clock(c.start, period_start, period_end)
+        _, t1 = clock(c.end, period_start, period_end)
         near = sp[(sp.onset <= c.end + CTX) & (sp.end >= c.start - CTX)]
         sp_end = int(near.rule_end.iat[0]) if len(near) else None
         ev = e[(e.idx * step >= lo) & (e.idx * step < hi)].assign(f=lambda x: x.idx * step)
@@ -224,18 +238,18 @@ def main():
             period=p, clock_start=t0, clock_end=t1, view_from=lo, view_to=hi - 1,
             R1=C.seq(r1, c.start, c.end + 1), R2=C.seq(r2, c.start, c.end + 1),
             sp_rule_end='' if sp_end is None else sp_end,
-            events='; '.join(f'{clock(f, period_start)[1]} {TEAMS[t]} {n}' for f, t, n in
+            events='; '.join(f'{clock(f, period_start, period_end)[1]} {teams[t]} {n}' for f, t, n in
                              zip(ev.f, ev.team, ev.original_event))))
         title = f'{c.clip_id}  [{c.type}]  period {p}  {t0}–{t1}  frames {c.start}–{c.end}'
         timeline_png(pack / 'timelines' / f'{c.clip_id}.png', c, r1, r2, alive, ev, lo, hi, sp_end, title)
         if a.anim:
             (pack / 'anim').mkdir(exist_ok=True)
-            anim_mp4(pack / 'anim' / f'{c.clip_id}.mp4', d, r1, r2, lo, hi, c, title, step)
+            anim_mp4(pack / 'anim' / f'{c.clip_id}.mp4', d, r1, r2, lo, hi, c, title, step, teams)
     out = pd.DataFrame(rows)
     out.to_csv(pack / 'clips.csv', index=False)
     pd.DataFrame({'clip_id': out.clip_id, 'decision': '', 'other_segments': '', 'reason_code': '',
                   'confidence': '', 'note': ''}).to_csv(pack / 'decisions.csv', index=False)
-    (pack / 'README.md').write_text(README.format(match=adj.name, home=TEAMS[0]))
+    (pack / 'README.md').write_text(README.format(match=f'{teams[0]} vs {teams[1]} ({meta["match_id"]})', home=teams[0]))
 
     # how well the SET_PIECE rule reproduces the coders' own set-piece ends (both coders, all set pieces)
     diffs = []

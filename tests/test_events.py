@@ -58,5 +58,8 @@ def test_unsynced_events_past_the_tracking_are_dropped_not_clipped(tmp_path):
 def test_offset_sync_warns(tmp_path):
     d = match()
     d["ball"][:, :2] = (0.0, 30.0)  # ball far from every player at the synced on-ball events
-    with pytest.warns(UserWarning, match="offset"):
+    with pytest.warns(UserWarning) as rec:
         Ev.load(str(events_csv(tmp_path / "e.csv", P1_SYNCED)), d)
+    msgs = [str(w.message) for w in rec]
+    assert any("offset" in m for m in msgs)
+    assert any("mapping" in m and "doubtful" in m for m in msgs)  # nearest team says nothing either

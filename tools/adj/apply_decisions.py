@@ -1,9 +1,10 @@
 """Apply the third adjudicator's decisions -> final labels, intervals, training npz, QC report (STUDY1_PLAN §4.7).
 
-  python tools/adj/apply_decisions.py ADJ_DIR DECISIONS_CSV TRACKING_NPZ OUT_DIR [PREFIX]
+  python tools/adj/apply_decisions.py ADJ_DIR DECISIONS_CSV TRACKING_NPZ OUT_DIR META_JSON
 
 ADJ_DIR holds labels_v1_25hz.csv, clips.csv and key_DO_NOT_SHARE.json (from codebook_v1.py / make_pack.py).
 TRACKING_NPZ is a 12.5 Hz phase npz whose tracking arrays are reused (labels are replaced).
+META_JSON (phase.meta) gives the prefix of the output npz files: <prefix>_{adj,A,B,soft}.npz.
 """
 import json
 import sys
@@ -14,6 +15,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import codebook_v1 as C  # noqa: E402
+from phase import meta as M  # noqa: E402  (codebook_v1 puts the repo root on sys.path)
 
 CODE = {v: k for k, v in C.NAMES.items()}
 REASONS = {'C1', 'C2', 'C3', 'C4', 'P', 'X', 'O'}  # codebook v4.1: §2.5 criteria, §2.4 possession, §2.2.3 EX
@@ -39,7 +41,8 @@ def parse_other(text, s, e):
     return out
 
 
-def main(adj_dir, decisions_csv, npz, out_dir, prefix='ajax_psv_full'):
+def main(adj_dir, decisions_csv, npz, out_dir, meta_json):
+    prefix = M.prefix(M.load(meta_json))
     adj, out = Path(adj_dir), Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     L = pd.read_csv(adj / 'labels_v1_25hz.csv')
@@ -139,4 +142,6 @@ def main(adj_dir, decisions_csv, npz, out_dir, prefix='ajax_psv_full'):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) != 6:
+        sys.exit(__doc__)
     main(*sys.argv[1:6])

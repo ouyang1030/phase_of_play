@@ -30,8 +30,14 @@ WIN_GROUP = {  # how the ball was won (context feature of a turnover)
 
 
 def load(csv_path: str, d: dict, src_hz: float = 25.0, snap_s: float = 1.0,
-         max_ball_dist_m: float = 3.0, max_period_mismatch: float = 0.05) -> pd.DataFrame:
+         max_ball_dist_m: float = 3.0, max_period_mismatch: float = 0.05, home_team_id=None,
+         min_home_vote: float = 0.7) -> pd.DataFrame:
     """Events -> DataFrame[idx (tracking index at d['hz']), team (0 home / 1 away), type, ok, x, y].
+
+    Home = tracking team 0. Each synced event votes for the event team_id whose tracking team is nearest to the
+    ball; home_vote is the share of synced events that agree with the mapping used. With `home_team_id` (meta.json
+    home_team.id) that id is home, and a vote for the other mapping raises; without it the vote decides. A
+    home_vote below `min_home_vote` warns (ball and players too far apart to tell the teams apart).
 
     Checks (raise on errors that would silently corrupt possession, warn on doubtful sync):
     - `tracking_frame` must be the 0-based row index of the fused 25 Hz CSV: a synced frame past the end of
@@ -90,9 +96,24 @@ def load(csv_path: str, d: dict, src_hz: float = 25.0, snap_s: float = 1.0,
     # which event team_id is the tracking home team: nearest team to the ball at synced events
     near = _nearest_team(d, e.idx.to_numpy())
     ids = e.team_id.unique()
-    votes = {i: np.nanmean(near[(e.team_id == i).to_numpy() & synced] == 0) for i in ids}
-    home_id = max(votes, key=lambda i: -np.inf if np.isnan(votes[i]) else votes[i])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # a team without synced events: NaN vote
+        votes = {i: np.nanmean(near[(e.team_id == i).to_numpy() & synced] == 0) for i in ids}
+    voted = max(votes, key=lambda i: -np.inf if np.isnan(votes[i]) else votes[i])
+    home_id = voted
+    if home_team_id is not None:
+        match = [i for i in ids if str(i) == str(home_team_id)]
+        if not match:
+            raise ValueError(f"home_team_id {home_team_id} is not a team_id of the events ({sorted(map(str, ids))})")
+        home_id = match[0]
+        if voted != home_id:
+            raise ValueError(f"meta: home team_id {home_team_id}, but at synced events the ball is nearest to tracking "
+                             f"team 0 for team_id {voted}: home and away are swapped in the tracking or the meta")
     e["team"] = np.where(e.team_id == home_id, 0, 1)
+    home_vote = float(np.mean(near[synced] == e.team.to_numpy()[synced]))
+    if not home_vote >= min_home_vote:
+        warnings.warn(f"only {home_vote:.0%} of synced events have a player of the event team nearest to the ball: "
+                      f"home/away mapping (home team_id {home_id}) is doubtful")
 
     # snap unsynced on-ball events to the closest ball contact of their team
     w = int(round(snap_s * float(d["hz"])))
@@ -120,7 +141,8 @@ def load(csv_path: str, d: dict, src_hz: float = 25.0, snap_s: float = 1.0,
         ["idx", "team", "type", "ok", "x", "y", "period_id", "synced", "original_event"]]
     out.attrs["sync_report"] = dict(n_events=int(len(out)), n_synced=int(synced.sum()), n_dropped=int((~keep).sum()),
                                     fallback_periods=fallback, median_ball_dist_m=round(ball_d, 2),
-                                    period_mismatch=round(mism, 4))
+                                    period_mismatch=round(mism, 4), home_team_id=str(home_id),
+                                    home_vote=round(home_vote, 3))
     return out
 
 
