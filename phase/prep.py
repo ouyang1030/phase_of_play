@@ -71,7 +71,8 @@ def detect_periods(n_on: np.ndarray, period_col=None, hz: float = SRC_HZ,
                    min_break_s: float = 60.0, min_period_s: float = 300.0) -> np.ndarray:
     """Period id per frame (1, 2, ... ; 0 = no players on the pitch).
 
-    With `period_col` (e.g. databallpy's `period_id`) that column is used as is (values <= 0 -> 0).
+    With `period_col` (e.g. databallpy's `period_id`) that column is used as is (values <= 0 -> 0), unless it
+    has no period at all (an unfilled column, e.g. all 0): then it is ignored with a warning.
     Otherwise periods are the stretches with players on the pitch, separated by player-free runs of at
     least `min_break_s` (shorter player-free runs are tracking dropouts inside a period); stretches shorter
     than `min_period_s` are not periods. Handles any number of periods (extra time, penalties).
@@ -81,8 +82,10 @@ def detect_periods(n_on: np.ndarray, period_col=None, hz: float = SRC_HZ,
     if period_col is not None:
         p = pd.to_numeric(pd.Series(np.asarray(period_col)), errors="coerce").fillna(0).to_numpy()
         p = np.where(p > 0, p, 0).astype(int)
-        p[empty] = 0
-        return p
+        if (p > 0).any():
+            p[empty] = 0
+            return p
+        warnings.warn("period column has no period > 0 (not filled): periods from player-free breaks instead")
     play = ~empty
     for a, b in _runs(empty):
         if a > 0 and b < T and b - a < min_break_s * hz:

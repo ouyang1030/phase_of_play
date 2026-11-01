@@ -101,3 +101,11 @@ def test_home_attack_sign_outside_periods_uses_nearest_period():
     d = dict(period=np.array([0, 1, 1, 0, 0, 2, 2, 0]), attack_sign=np.array([0.0, 1.0, -1.0]))
     assert prep.home_attack_sign(d, np.arange(8)).tolist() == [1, 1, 1, 1, -1, -1, -1, -1]
     assert float(prep.home_attack_sign(d, 5)) == -1
+
+
+def test_unfilled_period_column_falls_back_to_breaks(tmp_path):
+    # the Ajax-PSV fused CSV has a period_id column that is 0 on every row
+    with pytest.warns(UserWarning, match="no period > 0"):
+        d = load(tmp_path, T=1000, empty=[(450, 550)], flip_from=550, period_col=np.zeros(1000))
+    assert (d["period"][:225] == 1).all() and (d["period"][275:] == 2).all()
+    assert d["attack_sign"][1] == 1 and d["attack_sign"][2] == -1
