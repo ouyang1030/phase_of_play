@@ -23,8 +23,8 @@ from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 a
 | `hazard.py` | turnover-anchored discrete-time hazard for transition duration (causal features, censoring); timer τ* on heuristic vs event possession; same blocked CV as `train.py` (PLAN §15) |
 
 Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,tcn,none}`, `--no-poss-input`
-(drops `poss_ref` from the context features only: the node feature `team_poss` and, unless `--no-timer-feat`,
-`time_since_turnover` still come from the input possession).
+(removes every input derived from the input possession: `poss_ref` and `time_since_turnover` from the context
+features and the node feature `team_poss`; before 2026-11 it removed `poss_ref` only).
 
 Auxiliary possession target `--poss_target {label,input}` (default `label`): the possession head learns the
 annotators' possession (label in est_attack / def_to_att of the reference team; soft labels: q0 + q1) on labelled

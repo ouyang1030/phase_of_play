@@ -40,22 +40,30 @@ def boundary_target(label: np.ndarray, sigma: float) -> np.ndarray:
     return tgt
 
 
+POSS_CTX = ("poss_ref", "time_since_turnover")  # context features computed from the input possession
+POSS_NODE = ("team_poss",)  # node features computed from the input possession
+
+
 class Data:
     """Holds both views as tensors on CPU; builds window batches.
 
     Auxiliary possession target (cfg poss_target): "label" = the annotators' possession, i.e. the frame label is
     one of the reference team's classes (est_attack, def_to_att; soft labels: q0 + q1), on labelled training
     frames; "input" = the possession fed to the model (poss_ref: events or tracking heuristic) on alive training
-    frames (the behaviour before 2026-11). cfg poss_input=False drops poss_ref from the context features."""
+    frames (the behaviour before 2026-11). cfg poss_input=False removes every input derived from the input
+    possession: poss_ref and time_since_turnover (context) and team_poss (node feature)."""
 
     def __init__(self, views, d, cfg):
         self.T = len(d["label"])
         self.poss_target = cfg.get("poss_target", "label")
         if self.poss_target not in ("label", "input"):
             raise ValueError(f"poss_target must be 'label' or 'input', got {self.poss_target!r}")
+        poss_input = cfg.get("poss_input", True)
         use = [i for i, n in enumerate(views[0]["ctx_names"])
-               if (cfg["timer_feat"] or n != "time_since_turnover") and (cfg.get("poss_input", True) or n != "poss_ref")]
+               if (cfg["timer_feat"] or n != "time_since_turnover") and (poss_input or n not in POSS_CTX)]
         self.ctx_names = [views[0]["ctx_names"][i] for i in use]
+        node_use = [i for i, n in enumerate(Fe.NODE_FEATS) if poss_input or n not in POSS_NODE]
+        self.node_names = [Fe.NODE_FEATS[i] for i in node_use]
         self.soft = cfg.get("soft", False)
         self.v = {}
         for r in (0, 1):
@@ -70,7 +78,7 @@ class Data:
             else:
                 tgt, has = np.isin(v["label"], (0, 1)), v["label"] >= 0
             self.v[r] = dict(
-                node=torch.from_numpy(v["node"]), pos=torch.from_numpy(v["node_pos"]),
+                node=torch.from_numpy(np.ascontiguousarray(v["node"][..., node_use])), pos=torch.from_numpy(v["node_pos"]),
                 valid=torch.from_numpy(v["node_mask"]), glob=torch.from_numpy(g.astype(np.float32)),
                 label=torch.from_numpy(v["label"].astype(np.int64)),
                 poss_tgt=torch.from_numpy(np.asarray(tgt, np.float32)),
@@ -335,7 +343,8 @@ def parser() -> argparse.ArgumentParser:
                     help="auxiliary possession target: annotator possession from the labels (default) or the input "
                          "possession (events / heuristic; runs before 2026-11)")
     ap.add_argument("--no-poss-input", dest="poss_input", action="store_false",
-                    help="ablation: drop poss_ref from the context features")
+                    help="ablation: no input derived from the input possession (poss_ref, time_since_turnover, "
+                         "node feature team_poss)")
     ap.add_argument("--mark", action="store_true", help="add 1:1 marking edges (Hungarian outfield assignment)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")

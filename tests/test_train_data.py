@@ -78,13 +78,33 @@ def test_input_target_is_the_old_behaviour(match):
         batch(d, views, poss_target="events")
 
 
-def test_no_poss_input_drops_poss_ref_from_the_context(match):
+def test_no_poss_input_drops_every_possession_input(match):
     d, views = match
     full, _ = batch(d, views)
     abl, b = batch(d, views, poss_input=False)
-    assert "poss_ref" in full.ctx_names and "poss_ref" not in abl.ctx_names
-    assert abl.glob_dim == full.glob_dim - 1
-    assert "time_since_turnover" in abl.ctx_names
+    assert {"poss_ref", "time_since_turnover"} <= set(full.ctx_names)
+    assert not {"poss_ref", "time_since_turnover"} & set(abl.ctx_names)
+    assert abl.glob_dim == full.glob_dim - 2
+    assert "team_poss" in full.node_names and "team_poss" not in abl.node_names
+    assert abl.node_dim == full.node_dim - 1 and b["node"].shape[-1] == abl.node_dim
+    i = Fe.NODE_FEATS.index("team_poss")
+    keep = [k for k in range(len(Fe.NODE_FEATS)) if k != i]
+    assert torch.equal(abl.v[0]["node"], full.v[0]["node"][..., keep])
+
+
+def test_no_poss_input_model_inputs_do_not_depend_on_the_input_possession(match):
+    d, views = match
+    rng = np.random.default_rng(1)
+    other = Fe.build(d, rng.integers(0, 2, T).astype(float))  # a different input possession
+    for cfg in (dict(), dict(soft=True)):
+        a, _ = batch(d, views, poss_input=False, **cfg)
+        b, _ = batch(d, other, poss_input=False, **cfg)
+        for r in (0, 1):
+            for k in ("node", "glob", "pos", "valid", "label", "poss_tgt", "poss_mask"):
+                assert torch.equal(a.v[r][k], b.v[r][k]), (cfg, r, k)
+        full_a, _ = batch(d, views, **cfg)
+        full_b, _ = batch(d, other, **cfg)
+        assert not torch.equal(full_a.v[0]["node"], full_b.v[0]["node"])  # with possession input they differ
 
 
 def test_loss_uses_the_target_on_masked_frames_only(match):
