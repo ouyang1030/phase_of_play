@@ -14,7 +14,7 @@ from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 a
 
 | file | content |
 |---|---|
-| `prep.py` | CSV → slots (11/team; a slot keeps its player while on the pitch, `slot_col` / `player_cols`), velocities, GK (roster from `meta.json` with `--meta`, else the player nearest to his own goal on > 50% of his frames and on ≥ 60 s; several per half allowed), periods (provider `period_id` column if present, else player-free breaks ≥ 60 s; any number of periods), play direction per period, label mapping |
+| `prep.py` | CSV → slots (11/team; a slot keeps its player while on the pitch, `slot_col` / `player_cols`), velocities, GK (roster from `meta.json` with `--meta`, else the player nearest to his own goal on > 50% of his frames and on ≥ 60 s; several per half allowed), periods (kick-off / last frame from `meta.json` with `--meta`, else a filled provider `period_id` column, else player-free breaks ≥ 60 s; any number of periods), play direction per period, label mapping |
 | `features.py` | L1 node features, L3 Organization Block (polarization, rotation, line silhouette k=2/3/4, hull, stretch, pressure, ball-area numbers), L4 multi-scale (raw/2 s/5 s), possession heuristic, two mirrored views |
 | `model.py` | heterogeneous graph attention (intra_ref / intra_opp / press-kNN / ball) → BiGRU or MS-TCN → class / boundary / possession heads; focal CE + boundary + smoothing + possession + view-symmetry loss |
 | `evaluate.py` | timer baseline L_fix(τ), mode filter, HSMM-lite Viterbi, frame / boundary / segmental metrics |
@@ -48,6 +48,10 @@ across a dead ball need no confirmation. Both runs report the label agreement of
 - 2026-11: player slots are stable (before, every slot after a missing player shifted by one for the length of
   the gap, and 2 s velocities were averaged across different players). Old npz files have no `slot_col`;
   `features.build` still accepts them but warns. Re-create the npz files and re-run models before comparing.
+- 2026-11: with `--meta`, periods are the provider's kick-off / last frames. The player-free break rule counts the
+  minute after the half-time whistle and the line-up before the second-half kick-off as play (Ajax–PSV: 1848
+  frames at 12.5 Hz, 30 of them "alive"). Frames outside a period now take the play direction of the nearest
+  period in `features` / `hazard` (before: home attacks +x).
 
 ## Changes that alter training results
 - 2026-11: the auxiliary possession target is the annotators' possession (`--poss_target label`). All earlier

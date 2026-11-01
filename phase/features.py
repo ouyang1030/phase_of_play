@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import ConvexHull
 
+from .prep import home_attack_sign
+
 HALF_L, HALF_W = 52.5, 34.0
 MIRROR = np.array([2, 3, 0, 1])  # class permutation between the two views
 
@@ -174,9 +176,8 @@ def build(d: dict, poss: np.ndarray, mark: bool = False) -> dict:
     hz = float(d["hz"])
     T = len(d["label"])
     pairs = mark_pairs(d["pos"], d["is_gk"]) if mark else None
-    per = d["period"].astype(int)
-    home_sign = d["attack_sign"][per]  # +1 if home attacks +x
-    home_sign = np.where(per == 0, 1.0, home_sign).astype(np.float32)
+    home_sign = home_attack_sign(d, np.arange(T)).astype(np.float32)  # +1 if home attacks +x; outside a
+    # period (break, pre-kick-off, no players) the direction of the nearest period
     team_sign = np.stack([home_sign, -home_sign], 1)  # (T, 2)
 
     blocks = [team_block(d["pos"][:, t], d["vel"][:, t], d["is_gk"][:, t], team_sign[:, t])

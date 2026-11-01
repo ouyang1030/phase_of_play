@@ -13,7 +13,7 @@ Output npz keys
   ball_missing_play, ball_gap_max_s, ball_interp_play   scalars: share of frames in play (ball alive) without
                         ball xy, longest such run (s), share of frames in play interpolated
   alive  (T,)           ball in play
-  period (T,)           1, 2, ... (extra time 3, 4, ...), 0 = no players (break)
+  period (T,)           1, 2, ... (extra time 3, 4, ...), 0 = outside a period (break) or no players
   attack_sign (P+1,)    per period: +1 if HOME attacks +x (index 0 unused, length >= 3)
   label  (T,)           4-moment label, home perspective, -1 = unlabeled
   sub    (T,)           subcategory id, -1 = unlabeled
@@ -86,10 +86,11 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
 
 
 def detect_periods(n_on: np.ndarray, period_col=None, hz: float = SRC_HZ,
-                   min_break_s: float = 60.0, min_period_s: float = 300.0) -> np.ndarray:
-    """Period id per frame (1, 2, ... ; 0 = no players on the pitch).
+                   min_break_s: float = 60.0, min_period_s: float = 300.0, periods: dict | None = None) -> np.ndarray:
+    """Period id per frame (1, 2, ... ; 0 = outside a period or no players on the pitch).
 
-    With `period_col` (e.g. databallpy's `period_id`) that column is used as is (values <= 0 -> 0), unless it
+    With `periods` ({period: (kick-off frame, last frame)}, inclusive, from meta.json: phase.meta.periods) those
+    frames are used; this takes precedence over everything else. With `period_col` (e.g. databallpy's `period_id`) that column is used as is (values <= 0 -> 0), unless it
     has no period at all (an unfilled column, e.g. all 0): then it is ignored with a warning.
     Otherwise periods are the stretches with players on the pitch, separated by player-free runs of at
     least `min_break_s` (shorter player-free runs are tracking dropouts inside a period); stretches shorter
@@ -97,6 +98,18 @@ def detect_periods(n_on: np.ndarray, period_col=None, hz: float = SRC_HZ,
     """
     empty = n_on == 0
     T = len(empty)
+    if periods:
+        p = np.zeros(T, int)
+        prev_end = -1
+        for k, (a, b) in sorted(periods.items(), key=lambda kv: kv[1][0]):
+            if not (prev_end < a <= b < T):
+                raise ValueError(f"period {k}: frames {a}..{b} overlap the previous period or lie outside the "
+                                 f"{T} frames of the CSV (meta.json from another export?)")
+            if np.mean(~empty[a:b + 1]) < 0.5:
+                warnings.warn(f"period {k} (frames {a}..{b}): players on the pitch on less than half of its frames")
+            p[a:b + 1], prev_end = k, b
+        p[empty] = 0
+        return p
     if period_col is not None:
         p = pd.to_numeric(pd.Series(np.asarray(period_col)), errors="coerce").fillna(0).to_numpy()
         p = np.where(p > 0, p, 0).astype(int)
@@ -216,8 +229,12 @@ def goalkeeper_columns(xy: np.ndarray, period: np.ndarray, attack_sign: np.ndarr
 
 
 def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 300.0, roster: dict | None = None,
-         min_gk_s: float = 60.0, max_gk_bad: float = 0.01, pitch_length: float = 105.0) -> dict:
+         min_gk_s: float = 60.0, max_gk_bad: float = 0.01, pitch_length: float = 105.0,
+         periods: dict | None = None) -> dict:
     """Fused CSV -> arrays (module docstring).
+
+    periods: {period: (kick-off frame, last frame)} of the CSV rows (meta.json, phase.meta.periods); without it
+    periods come from a filled provider period column, else from player-free breaks (detect_periods).
 
     roster: player column name ('home_home_26') -> is goalkeeper (meta.json players, phase.meta.roster); columns
     missing from it are not goalkeepers (warning). Without a roster goalkeepers come from goalkeeper_columns.
@@ -237,10 +254,11 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
         team_cols.append(cx)
         team_xy.append(np.stack([df[cx].to_numpy(float), df[cy].to_numpy(float)], -1))  # (T, P, 2)
 
-    # periods: provider column if present, else player-free breaks
+    # periods: meta.json if given, else a filled provider column, else player-free breaks
     n_on = sum((~np.isnan(xy[..., 0])).sum(1) for xy in team_xy)
     pcol = next((c for c in df.columns if c.lower() in ("period_id", "period")), None)
-    period = detect_periods(n_on, None if pcol is None else df[pcol].to_numpy(), SRC_HZ, min_break_s, min_period_s)
+    period = detect_periods(n_on, None if pcol is None or periods else df[pcol].to_numpy(), SRC_HZ, min_break_s,
+                            min_period_s, periods)
     n_per = int(period.max())
 
     # direction of play per period from team centroids
@@ -341,19 +359,24 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
     ap.add_argument("--out", default="artifacts/match.npz")
-    ap.add_argument("--meta", help="meta.json: goalkeepers from its players (roster) and the pitch length")
+    ap.add_argument("--meta", help="meta.json: periods (kick-off / last frames), goalkeepers from its players "
+                                   "(roster) and the pitch length")
     a = ap.parse_args()
     kw = {}
     if a.meta:
         from . import meta as M
         m = M.load(a.meta)
-        kw = dict(roster=M.roster(m), pitch_length=float(m["pitch"]["length"]))
+        kw = dict(roster=M.roster(m) if m.get("players") else None, pitch_length=float(m["pitch"]["length"]),
+                  periods=M.periods(m))
     d = load(a.csv, **kw)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, **d)
     lab = d["label"]
     print(f"ball in play: {d['ball_missing_play']:.2%} of frames without ball xy, longest gap "
           f"{d['ball_gap_max_s']:.1f} s, {d['ball_interp_play']:.2%} interpolated (gaps <= 0.5 s)")
+    print("periods (12.5 Hz frames):", {int(p): (int(np.flatnonzero(d["period"] == p)[0]),
+                                                   int(np.flatnonzero(d["period"] == p)[-1]))
+                                         for p in np.unique(d["period"]) if p > 0})
     print(f"T={len(lab)} @ {HZ} Hz | labeled {np.mean(lab >= 0):.1%} | "
           f"attack_sign={d['attack_sign'][1:]} | class counts "
           + str({CLASSES[c]: int((lab == c).sum()) for c in range(4)}))

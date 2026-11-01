@@ -49,6 +49,18 @@ def prefix(meta: dict) -> str:
     return meta.get("prefix") or f"{slug(meta['home_team']['name'])}_{slug(meta['away_team']['name'])}_full"
 
 
+def periods(meta: dict) -> dict | None:
+    """{period: (kick-off frame, last frame)} (0-based rows of the fused CSV, inclusive) for phase.prep, or None if
+    meta has no period_end_frame."""
+    if not meta.get("period_end_frame"):
+        return None
+    start, end = meta["period_start_frame"], meta["period_end_frame"]
+    missing = sorted(set(start) ^ set(end))
+    if missing:
+        raise ValueError(f"periods {missing} have only a start or only an end frame in meta.json")
+    return {p: (start[p], end[p]) for p in sorted(start)}
+
+
 def roster(meta: dict) -> dict:
     """Player column of the fused CSV ('home_home_26': the number is the shirt number) -> is goalkeeper."""
     if not meta.get("players"):

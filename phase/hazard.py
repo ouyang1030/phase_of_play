@@ -26,6 +26,7 @@ from sklearn.preprocessing import StandardScaler
 from . import evaluate as E
 from . import events as Ev
 from . import features as Fe
+from .prep import home_attack_sign
 
 DT_S = 0.4
 TIME_EDGES = np.array([0, 0.4, 1, 2, 3, 4, 5, 6, 8, 10, 13, 17, 22, 30.01])
@@ -63,8 +64,7 @@ class Featurizer:
         self.trail = {w: _trailing(self.raw[w], int(2 * self.hz)) for w in (0, 1)}
         ctx_keep = [i for i, n in enumerate(views[0]["ctx_names"]) if n not in ("poss_ref", "time_since_turnover")]
         self.ctx = {w: views[w]["ctx"][:, ctx_keep] for w in (0, 1)}
-        per = d["period"].astype(int)
-        self.home_sign = np.where(per == 0, 1.0, d["attack_sign"][per])
+        self.home_sign = home_attack_sign(d, np.arange(len(d["period"])))
         self.to = turnovers
 
     def episode_ctx(self, i):
