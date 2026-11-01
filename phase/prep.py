@@ -3,7 +3,8 @@
 Output npz keys
   pos    (T, 2, 11, 2)  player xy per team slot [0=home, 1=away], NaN if empty
   vel    (T, 2, 11, 2)  velocity m/s (0.2 s centred diff, smoothed)
-  is_gk  (T, 2, 11)     bool
+  is_gk  (T, 2, 11)     bool (from the roster, else goalkeeper_columns)
+  player_is_gk (2, C)   goalkeeper flag per player column (aligned with player_cols)
   slot_col (T, 2, 11)   player column held by each slot (index into player_cols[team]), -1 = empty
   player_cols (2, C)    player column names per team ('home_home_7'), '' = padding
   ball   (T, 3)         ball xyz
@@ -155,7 +156,33 @@ def home_attack_sign(d: dict, idx) -> np.ndarray:
     return np.where(sign == 0, 1.0, sign)
 
 
-def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 300.0) -> dict:
+def goalkeeper_columns(xy: np.ndarray, period: np.ndarray, attack_sign: np.ndarray, team: int, hz: float = SRC_HZ,
+                       min_s: float = 60.0, half_length: float = 52.5) -> np.ndarray:
+    """Goalkeeper flag per player column of one team, without a roster.
+
+    xy (T, C, 2) at `hz`. A column is a goalkeeper if, over the frames it is on the pitch inside a period, it is the
+    team's player nearest to its own goal (centre of the goal line, from the period's direction of play) on more
+    than half of them, and it is on the pitch for at least `min_s`. Several columns can qualify (a goalkeeper
+    substituted during a half)."""
+    T, C = xy.shape[:2]
+    home_sign = np.asarray(attack_sign, float)[np.asarray(period, int)]  # 0 outside periods
+    own_x = -half_length * home_sign * (1 if team == 0 else -1)
+    on = np.isfinite(xy[..., 0]) & (home_sign != 0)[:, None]
+    dist = np.where(on, np.hypot(xy[..., 0] - own_x[:, None], xy[..., 1]), np.inf)
+    has = on.any(1)
+    nearest = np.bincount(np.argmin(dist[has], 1), minlength=C) if has.any() else np.zeros(C, int)
+    n_on = on.sum(0)
+    return (nearest > 0.5 * n_on) & (n_on >= min_s * hz)
+
+
+def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 300.0, roster: dict | None = None,
+         min_gk_s: float = 60.0, max_gk_bad: float = 0.01, pitch_length: float = 105.0) -> dict:
+    """Fused CSV -> arrays (module docstring).
+
+    roster: player column name ('home_home_26') -> is goalkeeper (meta.json players, phase.meta.roster); columns
+    missing from it are not goalkeepers (warning). Without a roster goalkeepers come from goalkeeper_columns.
+    Warns if, on frames with the ball in play, a team has no or several goalkeepers on more than max_gk_bad of them.
+    """
     df = pd.read_csv(csv_path, low_memory=False)
     T0 = len(df)
 
@@ -179,17 +206,17 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
         ax = np.nanmean(team_xy[1][m, :, 0]) if m.any() and np.isfinite(team_xy[1][m, :, 0]).any() else np.nan
         attack_sign[p] = -1.0 if hx > ax else 1.0  # NaN (no data) -> +1
 
-    # goalkeepers: player column with the most extreme mean x toward own goal
-    gk_col = np.full((2, n_per + 1), -1, int)
-    for t in range(2):
-        for p in range(1, n_per + 1):
-            x = team_xy[t][period == p, :, 0]
-            if not np.isfinite(x).any():
-                continue
-            own = -attack_sign[p] if t == 0 else attack_sign[p]
-            cnt = np.isfinite(x).sum(0)
-            mean_x = np.where(cnt > 0, np.nansum(x, 0) / np.maximum(cnt, 1), 0.0)
-            gk_col[t, p] = np.argmax(mean_x * own)
+    # goalkeepers per player column: roster if given, else nearest to own goal most of the time (goalkeeper_columns)
+    gk_flag = []
+    for t, team in enumerate(("home", "away")):
+        names = [c[:-2] for c in team_cols[t]]
+        if roster is not None:
+            missing = [n for n in names if n not in roster]
+            if missing:
+                warnings.warn(f"{team}: no roster entry for {missing}: not goalkeepers")
+            gk_flag.append(np.array([bool(roster.get(n, False)) for n in names], bool))
+        else:
+            gk_flag.append(goalkeeper_columns(team_xy[t], period, attack_sign, t, SRC_HZ, min_gk_s, pitch_length / 2))
 
     # velocity at source rate per player column, then smooth 0.2 s
     vel_src = []
@@ -214,12 +241,21 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
         c = np.clip(col_of, 0, None)
         pos[:, t] = np.where(ok[..., None], xy[rows, c], np.nan)
         vel[:, t] = np.where(ok[..., None], v[rows, c], np.nan)
-        is_gk[:, t] = ok & (col_of == gk_col[t, per][:, None]) & (per[:, None] > 0)
+        is_gk[:, t] = ok & gk_flag[t][c] & (per[:, None] > 0) if len(gk_flag[t]) else False
         slot_col[:, t] = col_of
         long = overflow > HZ  # short overlaps (substitutions) are expected
         if long.any():
             warnings.warn(f"{team}: more than 11 players on the pitch; dropped "
                           + ", ".join(f"{team_cols[t][i][:-2]} ({overflow[i] / HZ:.1f} s)" for i in np.flatnonzero(long)))
+
+    alive = df["ball_status"].to_numpy()[idx] == "alive"
+    play = alive & (per > 0)
+    for t, team in enumerate(("home", "away")):
+        bad = float(np.mean(is_gk[play, t].sum(1) != 1)) if play.any() else 0.0
+        if bad > max_gk_bad:
+            gks = [team_cols[t][i][:-2] for i in np.flatnonzero(gk_flag[t])]
+            warnings.warn(f"{team}: {bad:.1%} of frames with the ball in play do not have exactly one goalkeeper on the "
+                          f"pitch (goalkeeper columns {gks}{'' if roster is not None else ', no roster'})")
 
     ball = df[["Ball_X", "Ball_Y", "Ball_Z"]].to_numpy(float)
     ball_v = _smooth(np.gradient(ball[:, :2], axis=0) * SRC_HZ, 5)
@@ -231,6 +267,7 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
 
     width = max(len(c) for c in team_cols) if any(team_cols) else 1
     player_cols = np.array([[c[:-2] for c in cs] + [""] * (width - len(cs)) for cs in team_cols])
+    player_is_gk = np.array([np.r_[f, np.zeros(width - len(f), bool)] for f in gk_flag], bool)
 
     return dict(
         pos=pos.astype(np.float32),
@@ -238,9 +275,10 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
         is_gk=is_gk,
         slot_col=slot_col,
         player_cols=player_cols,
+        player_is_gk=player_is_gk,
         ball=np.nan_to_num(ball[idx]).astype(np.float32),
         ball_v=np.nan_to_num(ball_v[idx]).astype(np.float32),
-        alive=(df["ball_status"].to_numpy()[idx] == "alive"),
+        alive=alive,
         period=per.astype(np.int8),
         attack_sign=attack_sign.astype(np.float32),
         label=label[idx].astype(np.int8),
@@ -253,8 +291,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
     ap.add_argument("--out", default="artifacts/match.npz")
+    ap.add_argument("--meta", help="meta.json: goalkeepers from its players (roster) and the pitch length")
     a = ap.parse_args()
-    d = load(a.csv)
+    kw = {}
+    if a.meta:
+        from . import meta as M
+        m = M.load(a.meta)
+        kw = dict(roster=M.roster(m), pitch_length=float(m["pitch"]["length"]))
+    d = load(a.csv, **kw)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, **d)
     lab = d["label"]

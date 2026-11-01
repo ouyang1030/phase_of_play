@@ -16,7 +16,7 @@ CFG = dict(timer_feat=True, org_block=True, bnd_sigma_s=0.5, soft=False, poss_ta
 
 @pytest.fixture(scope="module")
 def match(tmp_path_factory):
-    d = prep.load(fused_csv(tmp_path_factory.mktemp("m") / "f.csv", T=2 * T), min_break_s=1, min_period_s=2)
+    d = prep.load(fused_csv(tmp_path_factory.mktemp("m") / "f.csv", T=2 * T), min_break_s=1, min_period_s=2, min_gk_s=1)
     label = np.full(T, -1)
     label[10:40], label[40:50], label[50:80], label[80:90] = 0, 3, 2, 1  # home, away, away, home
     d["label"] = label.astype(np.int8)

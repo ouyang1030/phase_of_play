@@ -4,7 +4,7 @@ Four-moment segmentation (est. attack / def→att transition / est. defense / at
 from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 at prototype scale.
 
 ```bash
-.venv/bin/python -m phase.prep  <fused.csv> --out artifacts/<match>.npz   # 25 Hz -> 12.5 Hz arrays
+.venv/bin/python -m phase.prep  <fused.csv> --out artifacts/<match>.npz [--meta meta.json]  # 25 Hz -> 12.5 Hz arrays
 .venv/bin/python -m phase.train --npz artifacts/<match>.npz --out artifacts/run_x
 .venv/bin/python -m phase.plot  artifacts/run_x                            # timeline.png
 # event-based possession (recommended) + turnover-anchored hazard baselines
@@ -14,7 +14,7 @@ from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 a
 
 | file | content |
 |---|---|
-| `prep.py` | CSV → slots (11/team; a slot keeps its player while on the pitch, `slot_col` / `player_cols`), velocities, GK, periods (provider `period_id` column if present, else player-free breaks ≥ 60 s; any number of periods), play direction per period, label mapping |
+| `prep.py` | CSV → slots (11/team; a slot keeps its player while on the pitch, `slot_col` / `player_cols`), velocities, GK (roster from `meta.json` with `--meta`, else the player nearest to his own goal on > 50% of his frames and on ≥ 60 s; several per half allowed), periods (provider `period_id` column if present, else player-free breaks ≥ 60 s; any number of periods), play direction per period, label mapping |
 | `features.py` | L1 node features, L3 Organization Block (polarization, rotation, line silhouette k=2/3/4, hull, stretch, pressure, ball-area numbers), L4 multi-scale (raw/2 s/5 s), possession heuristic, two mirrored views |
 | `model.py` | heterogeneous graph attention (intra_ref / intra_opp / press-kNN / ball) → BiGRU or MS-TCN → class / boundary / possession heads; focal CE + boundary + smoothing + possession + view-symmetry loss |
 | `evaluate.py` | timer baseline L_fix(τ), mode filter, HSMM-lite Viterbi, frame / boundary / segmental metrics |

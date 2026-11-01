@@ -29,7 +29,7 @@ def test_rolling_ignores_frames_where_the_player_is_off():
 def test_build_runs_on_prep_output_with_gaps(tmp_path):
     p = fused_csv(tmp_path / "f.csv", T=200, n_cols=12, extra={(0, 11): (100, 200), (1, 11): (0, 0)},
                   drop={(0, 5): [(100, 200)], (1, 2): [(40, 60)]})
-    d = prep.load(p, min_break_s=1, min_period_s=2)
+    d = prep.load(p, min_break_s=1, min_period_s=2, min_gk_s=1)
     views = Fe.build(d, np.zeros(len(d["label"])))
     for v in views.values():
         assert v["node"].shape == (100, 23, len(Fe.NODE_FEATS))

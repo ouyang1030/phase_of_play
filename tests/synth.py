@@ -7,15 +7,17 @@ import pandas as pd
 HZ = 12.5  # tracking dict rate (phase.prep output)
 
 
-def fused_csv(path, T: int, n_cols: int = 11, empty=(), flip_from=None, drop=None, extra=None, period_col=None):
+def fused_csv(path, T: int, n_cols: int = 11, empty=(), flip_from=None, drop=None, extra=None, period_col=None,
+              spot=None):
     """Write a fused 25 Hz CSV.
 
     Player column j of each team stands at a fixed spot (x = side * (5 + 3 j), y = j - 5), column 0 is the
     goalkeeper (x = side * 50). Home defends -x (side -1) until frame `flip_from`, then the teams swap ends.
     empty: frame ranges with no players (breaks). drop: {(team, col): [(a, b), ...]} frames a column is NaN.
     extra: {(team, col): (a, b)} columns that are present only on [a, b) (substitutes), NaN elsewhere.
+    spot: {(team, col): |x|} overrides the distance from the halfway line (50 = in goal).
     """
-    drop, extra = drop or {}, extra or {}
+    drop, extra, spot = drop or {}, extra or {}, spot or {}
     cols = {}
     flip = np.ones(T)
     if flip_from is not None:
@@ -23,7 +25,7 @@ def fused_csv(path, T: int, n_cols: int = 11, empty=(), flip_from=None, drop=Non
     for t, team in enumerate(("home", "away")):
         side = (-1 if t == 0 else 1) * flip
         for j in range(n_cols):
-            x = side * (50.0 if j == 0 else 5.0 + 3 * j)
+            x = side * spot.get((t, j), 50.0 if j == 0 else 5.0 + 3 * j)
             y = np.full(T, j - 5.0)
             x = x.copy()
             if (t, j) in extra:

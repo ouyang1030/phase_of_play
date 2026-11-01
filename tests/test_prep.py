@@ -8,7 +8,7 @@ import pytest
 from phase import prep
 from synth import fused_csv
 
-FAST = dict(min_break_s=1.0, min_period_s=2.0)  # synthetic matches are seconds long
+FAST = dict(min_break_s=1.0, min_period_s=2.0, min_gk_s=1.0)  # synthetic matches are seconds long
 
 
 def load(tmp_path, prep_kw=FAST, **kw):
@@ -64,7 +64,7 @@ def test_slot_names_are_stored(tmp_path):
 # ---------------------------------------------------------------- periods
 def test_no_break_does_not_crash(tmp_path):
     with pytest.warns(UserWarning, match="period 1"):
-        d = load(tmp_path, prep_kw={}, T=400)  # default thresholds: 16 s is not a period
+        d = load(tmp_path, prep_kw=dict(min_gk_s=1.0), T=400)  # default period thresholds: 16 s is not a period
     assert (d["period"] == 1).all()
     assert d["attack_sign"][1] == 1
 

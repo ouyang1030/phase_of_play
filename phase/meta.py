@@ -6,7 +6,9 @@
    "period_end_frame": {"1": 69023, "2": 168828},  # optional, last frame of each period
    "pitch": {"length": 105.0, "width": 68.0},     # m
    "frame_rate": 25.0,                             # Hz of the fused CSV
-   "prefix": "ajax_psv_full"}                      # optional, default "<home>_<away>_full" (lower case)
+   "prefix": "ajax_psv_full",                      # optional, default "<home>_<away>_full" (lower case)
+   "players": [{"column": "home_home_26", "team": "home", "shirt_num": 26, "name": "...",
+                "position": "goalkeeper", "is_gk": true}, ...]}   # optional: roster for phase.prep
 
 Tracking team 0 (home, the labels' reference team) is meta home_team; its id is the event-data team_id.
 """
@@ -45,3 +47,10 @@ def slug(name: str) -> str:
 def prefix(meta: dict) -> str:
     """File prefix of the label npz files: meta 'prefix', else '<home>_<away>_full' ('ajax_psv_full')."""
     return meta.get("prefix") or f"{slug(meta['home_team']['name'])}_{slug(meta['away_team']['name'])}_full"
+
+
+def roster(meta: dict) -> dict:
+    """Player column of the fused CSV ('home_home_26': the number is the shirt number) -> is goalkeeper."""
+    if not meta.get("players"):
+        raise ValueError("meta has no players: re-export it with notebooks/preprocessing.ipynb")
+    return {p["column"]: bool(p["is_gk"]) for p in meta["players"]}
