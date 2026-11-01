@@ -14,12 +14,12 @@ from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 a
 
 | file | content |
 |---|---|
-| `prep.py` | CSV → slots (11/team), velocities, GK, periods, play direction, label mapping |
+| `prep.py` | CSV → slots (11/team; a slot keeps its player while on the pitch, `slot_col` / `player_cols`), velocities, GK, periods (provider `period_id` column if present, else player-free breaks ≥ 60 s; any number of periods), play direction per period, label mapping |
 | `features.py` | L1 node features, L3 Organization Block (polarization, rotation, line silhouette k=2/3/4, hull, stretch, pressure, ball-area numbers), L4 multi-scale (raw/2 s/5 s), possession heuristic, two mirrored views |
 | `model.py` | heterogeneous graph attention (intra_ref / intra_opp / press-kNN / ball) → BiGRU or MS-TCN → class / boundary / possession heads; focal CE + boundary + smoothing + possession + view-symmetry loss |
 | `evaluate.py` | timer baseline L_fix(τ), mode filter, HSMM-lite Viterbi, frame / boundary / segmental metrics |
 | `train.py` | blocked time CV on the labeled stretch, per-fold τ* and HSMM fit, pooled out-of-fold evaluation |
-| `events.py` | Opta events (databallpy `event_data.csv`) → frames (synced / clock + offset + snap), event possession, turnover table (how, where, dead ball) |
+| `events.py` | Opta events (databallpy `event_data.csv`) → frames (synced / clock + offset + snap), sync checks (`attrs['sync_report']`), event possession, turnover table (how, where, dead ball) |
 | `hazard.py` | turnover-anchored discrete-time hazard for transition duration (causal features, censoring); timer τ* on heuristic vs event possession; same blocked CV as `train.py` (PLAN §15) |
 
 Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,tcn,none}`.
@@ -31,6 +31,11 @@ Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,
 | Defending Transition (Counterattack, Delayed Attack) | 1 def_to_att |
 | Defending | 2 est_defense |
 | Attacking Transition (Counterpressing, Delay and recovery) | 3 att_to_def |
+
+## Changes that need a re-run of `phase.prep`
+- 2026-11: player slots are stable (before, every slot after a missing player shifted by one for the length of
+  the gap, and 2 s velocities were averaged across different players). Old npz files have no `slot_col`;
+  `features.build` still accepts them but warns. Re-create the npz files and re-run models before comparing.
 
 ## Known limitations (v0)
 - **One match, blocked CV inside it** → same teams in train and test; results are a smoke test, not evidence.

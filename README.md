@@ -11,12 +11,20 @@ established defence, attack-to-defence transition) from tracking and event data.
 | `tools/adj/` | double annotation → adjudication pack → final labels, plus decoding and evaluation against the human ceiling. See [`tools/adj/README.md`](tools/adj/README.md). |
 | `tools/parse_events_to_df.py` | match event XML → roster and event CSVs |
 | `notebooks/preprocessing.ipynb` | tracking–event synchronisation with databallpy |
+| `tests/` | unit tests on synthetic matches (`tests/synth.py` builds fused CSVs, tracking dicts, event tables) |
 
 ## Setup
 
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
+```
+
+## Tests
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest          # synthetic data only, no licensed match data needed (torch not required)
 ```
 
 ## Data

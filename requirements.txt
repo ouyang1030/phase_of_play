@@ -8,5 +8,6 @@ matplotlib>=3.8
 pyarrow>=15
 
 # Optional
+# pytest            # tests/
 # databallpy        # notebooks/preprocessing.ipynb (tracking–event sync)
 # ffmpeg (system)   # tools/adj/make_pack.py --anim

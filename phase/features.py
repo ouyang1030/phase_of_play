@@ -6,6 +6,8 @@ reference team always attacks +x; labels are mirrored for the away view
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy.spatial import ConvexHull
@@ -24,6 +26,21 @@ def _roll(a: np.ndarray, win: int) -> np.ndarray:
     flat = a.reshape(a.shape[0], -1)
     out = pd.DataFrame(flat).rolling(win, center=True, min_periods=1).mean().to_numpy()
     return out.reshape(a.shape)
+
+
+def _roll_per_player(v: np.ndarray, slot_col: np.ndarray, win: int) -> np.ndarray:
+    """Centred rolling mean of per-slot values (T, 2, 11, ...) within runs where a slot holds the same player,
+    so the window never mixes two players (substitution, slot reassignment) or averages in empty frames."""
+    out = np.zeros_like(v)
+    T = len(v)
+    for t in range(v.shape[1]):
+        for s in range(v.shape[2]):
+            ids = slot_col[:, t, s]
+            ch = np.r_[0, 1 + np.flatnonzero(ids[1:] != ids[:-1]), T]
+            for a, b in zip(ch[:-1], ch[1:]):
+                if ids[a] >= 0:
+                    out[a:b, t, s] = _roll(v[a:b, t, s], win)
+    return out
 
 
 def _fill_team(xy: np.ndarray) -> np.ndarray:
@@ -164,7 +181,11 @@ def build(d: dict, poss: np.ndarray, mark: bool = False) -> dict:
 
     blocks = [team_block(d["pos"][:, t], d["vel"][:, t], d["is_gk"][:, t], team_sign[:, t])
               for t in range(2)]
-    vel2s = _roll(d["vel"], int(2 * hz))
+    if "slot_col" in d:
+        vel2s = _roll_per_player(d["vel"], d["slot_col"], int(2 * hz))
+    else:  # npz written before phase.prep stored slot identities
+        warnings.warn("npz has no slot_col (old phase.prep): 2 s velocities are smoothed per slot; re-run phase.prep")
+        vel2s = _roll(d["vel"], int(2 * hz))
     alive = d["alive"].astype(np.float32)
 
     views = {}

@@ -19,6 +19,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from phase import events as Ev  # noqa: E402
+from phase.prep import home_attack_sign  # noqa: E402
 import codebook_v1 as C  # noqa: E402
 
 FPS, CTX = 25, 5 * 25
@@ -27,9 +28,14 @@ COLORS = {0: '#1b7837', 1: '#a6dba0', 2: '#762a83', 3: '#f1a340', C.SP: '#4393c3
 TEAMS = ('Ajax', 'PSV')  # tracking team 0 = home = Ajax (labels are from Ajax's perspective)
 
 
+PERIOD_OFFSET_MIN = {1: 0, 2: 45, 3: 90, 4: 105, 5: 120}
+
+
 def clock(frame, period_start):
-    p = 2 if frame >= period_start[2] else 1
-    t = (frame - period_start[p]) / FPS + (45 * 60 if p == 2 else 0)
+    """(period, 'mm:ss' match clock) of a 25 Hz frame; period_start maps period -> first frame."""
+    started = [p for p, f in period_start.items() if frame >= f]
+    p = max(started) if started else min(period_start)
+    t = max(frame - period_start[p], 0) / FPS + 60 * PERIOD_OFFSET_MIN.get(p, 0)
     return p, f'{int(t // 60):02d}:{int(t % 60):02d}'
 
 
@@ -40,11 +46,11 @@ def sp_rule_end(r, e, d, step):
     s, t, team = r.onset, r.end, r.team
     if team < 0:
         return t
-    sign = 1 if team == 0 else -1
     ev = e[(e.idx * step > s + step) & (e.idx * step < t)]
     for row in ev.itertuples():
         if row.team != team and row.type in (1, 2):  # pass / offside pass
             return row.idx * step
+        sign = float(home_attack_sign(d, row.idx)) * (1 if team == 0 else -1)  # attacking team plays toward +x*sign
         if row.team == team and row.type in Ev.CONTROL and row.x * sign < 0:
             return row.idx * step
     return t
@@ -101,7 +107,7 @@ def anim_mp4(path, d, lab1, lab2, lo, hi, clip, title, step):
     for sx in (-1, 1):
         ax.add_patch(plt.Rectangle((sx * 52.5 - (16.5 if sx > 0 else 0), -20.16), 16.5, 40.32, fill=False, lw=0.8))
     ax.add_patch(plt.Circle((0, 0), 9.15, fill=False, lw=0.8))
-    ax.text(-52, 35, f'{TEAMS[0]} (blue) attacks →', fontsize=8)
+    direction = ax.text(-52, 35, '', fontsize=8)
     home = ax.scatter([], [], s=60, c='#2166ac', edgecolors='k', zorder=3)
     away = ax.scatter([], [], s=60, c='#b2182b', edgecolors='k', zorder=3)
     ball = ax.scatter([], [], s=25, c='k', zorder=4)
@@ -123,6 +129,7 @@ def anim_mp4(path, d, lab1, lab2, lo, hi, clip, title, step):
             ball.set_offsets(d['ball'][i, :2][None])
             cur.set_xdata([f - lo])
             head.set_text(f'{title}   frame {f}' + ('   [dead ball]' if not d['alive'][i] else ''))
+            direction.set_text(f"{TEAMS[0]} (blue) attacks {'→' if home_attack_sign(d, i) > 0 else '←'}")
             writer.grab_frame()
     plt.close(fig)
 
@@ -200,7 +207,7 @@ def main():
     r1, r2 = lab[key['R1']], lab[key['R2']]
     alive = L.alive.to_numpy().astype(bool)
     per = d['period']
-    period_start = {1: int(np.flatnonzero(per == 1)[0]) * step, 2: int(np.flatnonzero(per == 2)[0]) * step}
+    period_start = {int(p): int(np.flatnonzero(per == p)[0]) * step for p in np.unique(per) if p > 0}
 
     sp = rs[rs.set_piece].copy()
     sp['rule_end'] = [sp_rule_end(r, e, d, step) for r in sp.itertuples()]

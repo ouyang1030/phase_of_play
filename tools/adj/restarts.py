@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from phase import events as Ev
+from phase.prep import home_attack_sign
 
 FPS = 25
 CONTROL = set(Ev.CONTROL) | {Ev.TACKLE, Ev.BALL_TOUCH}
@@ -30,8 +31,9 @@ def detect(alive25: np.ndarray, d: dict, events_csv: str) -> pd.DataFrame:
         types = set(win.type)
         after = e[(ef >= s - FPS // 2) & (ef < min(t, s + 5 * FPS)) & e.type.isin(CONTROL)]
         team = int(after.team.iat[0]) if len(after) else -1
-        bx = float(d['ball'][min(s // step, len(d['ball']) - 1), 0])
-        x_att = bx if team == 0 else -bx  # home attacks +x in both periods (attack_sign == +1)
+        i = min(s // step, len(d['ball']) - 1)
+        bx = float(d['ball'][i, 0]) * float(home_attack_sign(d, i))  # home attacks +x in this frame
+        x_att = bx if team == 0 else -bx
         if k == 0 or d['period'][s // step] != d['period'][max(prev_end - 1, 0) // step] or Ev.GOAL in types:
             kind = 'kickoff'
         elif 6 in types:

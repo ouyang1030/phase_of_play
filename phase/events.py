@@ -5,10 +5,13 @@ Input: `event_data.csv` with columns event_type_id, team_id, is_successful, star
 databallpy could not sync the event).
 
 Frames: synced events keep their `tracking_frame`; the rest get wall-clock time + the per-period
-median clock offset of the synced events, then are snapped (+-1 s) to the frame where a player of
-the event team is closest to the ball.
+median clock offset of the synced events (or, for a period without synced events, the offset that puts
+its first event on the period's first tracking frame), then are snapped (+-1 s) to the frame where a
+player of the event team is closest to the ball. See `load` for the sync checks.
 """
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -26,30 +29,69 @@ WIN_GROUP = {  # how the ball was won (context feature of a turnover)
 }
 
 
-def load(csv_path: str, d: dict, src_hz: float = 25.0, snap_s: float = 1.0) -> pd.DataFrame:
-    """Events -> DataFrame[idx (tracking index at d['hz']), team (0 home / 1 away), type, ok, x, y]."""
+def load(csv_path: str, d: dict, src_hz: float = 25.0, snap_s: float = 1.0,
+         max_ball_dist_m: float = 3.0, max_period_mismatch: float = 0.05) -> pd.DataFrame:
+    """Events -> DataFrame[idx (tracking index at d['hz']), team (0 home / 1 away), type, ok, x, y].
+
+    Checks (raise on errors that would silently corrupt possession, warn on doubtful sync):
+    - `tracking_frame` must be the 0-based row index of the fused 25 Hz CSV: a synced frame past the end of
+      the tracking raises (provider frame ids such as TRACAB's would otherwise all be clipped to the last frame);
+    - a period without synced events is placed by aligning its first event (kick-off) with the first tracking
+      frame of that period (warning); no synced events at all raises;
+    - unsynced events that fall outside the tracking or have no valid time are dropped (warning), not clipped;
+    - warns if, at synced on-ball events, the ball is far from every player (median > max_ball_dist_m) or the
+      tracking period disagrees with the event period on more than max_period_mismatch of synced events.
+    A summary is returned in `df.attrs["sync_report"]`.
+    """
     e = pd.read_csv(csv_path)
-    e = e[(e.period_id > 0) & (e.event_type_id != 43)].copy()  # drop pre-match and deleted events
+    e = e[(e.period_id > 0) & (e.event_type_id != 43)].reset_index(drop=True)  # drop pre-match and deleted events
     step = int(round(src_hz / float(d["hz"])))
     T = len(d["label"])
+    n_src = T * step  # 25 Hz frames covered by the tracking arrays
+    per_trk = np.asarray(d["period"]).astype(int)
+
+    tf = pd.to_numeric(e.tracking_frame, errors="coerce").to_numpy(float)
+    synced = np.isfinite(tf) & (tf >= 0)
+    if not synced.any():
+        raise ValueError("no event has a tracking_frame >= 0: run the databallpy synchronisation first")
+    beyond = synced & (tf >= n_src)
+    if beyond.any():
+        raise ValueError(f"{int(beyond.sum())} synced events have tracking_frame >= {n_src} (tracking length at "
+                         f"{src_hz:g} Hz, max seen {int(tf[synced].max())}): tracking_frame must be the 0-based row "
+                         "index of the fused CSV, not the provider frame id")
 
     # frame: synced where available, else clock + per-period offset
-    t = pd.to_datetime(e.datetime, utc=True).map(lambda x: x.timestamp()).to_numpy()
-    f_clock = (t - t.min()) * src_hz
-    synced = e.tracking_frame.to_numpy() >= 0
-    frame = e.tracking_frame.to_numpy().astype(float)
-    for p in e.period_id.unique():
-        m = e.period_id.to_numpy() == p
-        off = np.median(frame[m & synced] - f_clock[m & synced])
+    t = pd.to_datetime(e.datetime, utc=True, errors="coerce").map(lambda x: x.timestamp()).to_numpy(float)
+    f_clock = (t - np.nanmin(t)) * src_hz
+    frame = np.where(synced, tf, np.nan)
+    per_ev = e.period_id.to_numpy().astype(int)
+    fallback = []
+    for p in np.unique(per_ev):
+        m = per_ev == p
+        ms = m & synced & np.isfinite(f_clock)
+        if ms.any():
+            off = np.median(frame[ms] - f_clock[ms])
+        else:
+            start = np.flatnonzero(per_trk == p)
+            if not len(start) or not np.isfinite(f_clock[m]).any():
+                raise ValueError(f"period {p}: no synced events and no tracking frames / event times to align it")
+            off = start[0] * step - np.nanmin(f_clock[m])
+            fallback.append(int(p))
+            warnings.warn(f"period {p}: no synced events; aligned its first event with tracking frame "
+                          f"{start[0] * step} (period start)")
         frame[m & ~synced] = f_clock[m & ~synced] + off
-    e["idx"] = np.clip(np.round(frame / step), 0, T - 1).astype(int)
+    keep = np.isfinite(frame) & (frame >= 0) & (frame < n_src)
+    if (~keep).any():
+        warnings.warn(f"dropped {int((~keep).sum())} unsynced events outside the tracking or without a valid time")
+    e, frame, synced = e[keep].copy(), frame[keep], synced[keep]
+    e["idx"] = np.minimum(np.round(frame / step), T - 1).astype(int)
     e["synced"] = synced
 
     # which event team_id is the tracking home team: nearest team to the ball at synced events
     near = _nearest_team(d, e.idx.to_numpy())
     ids = e.team_id.unique()
     votes = {i: np.nanmean(near[(e.team_id == i).to_numpy() & synced] == 0) for i in ids}
-    home_id = max(votes, key=votes.get)
+    home_id = max(votes, key=lambda i: -np.inf if np.isnan(votes[i]) else votes[i])
     e["team"] = np.where(e.team_id == home_id, 0, 1)
 
     # snap unsynced on-ball events to the closest ball contact of their team
@@ -63,9 +105,23 @@ def load(csv_path: str, d: dict, src_hz: float = 25.0, snap_s: float = 1.0) -> p
         if dist[j, tm] < 3.0:
             e.iat[i, e.columns.get_loc("idx")] = j
 
+    # sync sanity on synced events
+    so = synced & onball
+    ball_d = float(np.median(dist[e.idx.to_numpy()[so]].min(1))) if so.any() else float("nan")
+    if ball_d > max_ball_dist_m:
+        warnings.warn(f"at synced on-ball events the ball is {ball_d:.1f} m from the nearest player (median): "
+                      "tracking_frame is probably offset from the fused CSV rows")
+    mism = float(np.mean(per_trk[e.idx.to_numpy()[synced]] != e.period_id.to_numpy()[synced])) if synced.any() else 0.0
+    if mism > max_period_mismatch:
+        warnings.warn(f"{mism:.1%} of synced events fall in another tracking period than their event period")
+
     e = e.sort_values(["idx", "event_id"]).reset_index(drop=True)
-    return e.rename(columns={"event_type_id": "type", "is_successful": "ok", "start_x": "x", "start_y": "y"})[
+    out = e.rename(columns={"event_type_id": "type", "is_successful": "ok", "start_x": "x", "start_y": "y"})[
         ["idx", "team", "type", "ok", "x", "y", "period_id", "synced", "original_event"]]
+    out.attrs["sync_report"] = dict(n_events=int(len(out)), n_synced=int(synced.sum()), n_dropped=int((~keep).sum()),
+                                    fallback_periods=fallback, median_ball_dist_m=round(ball_d, 2),
+                                    period_mismatch=round(mism, 4))
+    return out
 
 
 def _team_ball_dist(d: dict) -> np.ndarray:
