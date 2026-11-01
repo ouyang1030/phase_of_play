@@ -8,7 +8,7 @@ HZ = 12.5  # tracking dict rate (phase.prep output)
 
 
 def fused_csv(path, T: int, n_cols: int = 11, empty=(), flip_from=None, drop=None, extra=None, period_col=None,
-              spot=None):
+              spot=None, ball=None, status=None):
     """Write a fused 25 Hz CSV.
 
     Player column j of each team stands at a fixed spot (x = side * (5 + 3 j), y = j - 5), column 0 is the
@@ -16,6 +16,7 @@ def fused_csv(path, T: int, n_cols: int = 11, empty=(), flip_from=None, drop=Non
     empty: frame ranges with no players (breaks). drop: {(team, col): [(a, b), ...]} frames a column is NaN.
     extra: {(team, col): (a, b)} columns that are present only on [a, b) (substitutes), NaN elsewhere.
     spot: {(team, col): |x|} overrides the distance from the halfway line (50 = in goal).
+    ball: (T, 3) ball xyz (default: at the centre spot). status: (T,) ball_status (default: all "alive").
     """
     drop, extra, spot = drop or {}, extra or {}, spot or {}
     cols = {}
@@ -39,8 +40,8 @@ def fused_csv(path, T: int, n_cols: int = 11, empty=(), flip_from=None, drop=Non
                 x[a:b], y[a:b] = np.nan, np.nan
             cols[f"{team}_{team}_{j + 1}_X"], cols[f"{team}_{team}_{j + 1}_Y"] = x, y
     df = pd.DataFrame(cols)
-    df["Ball_X"], df["Ball_Y"], df["Ball_Z"] = 0.0, 0.0, 0.0
-    df["ball_status"] = "alive"
+    df["Ball_X"], df["Ball_Y"], df["Ball_Z"] = (0.0, 0.0, 0.0) if ball is None else np.asarray(ball, float).T
+    df["ball_status"] = "alive" if status is None else np.asarray(status)
     df["Annotation_Category"] = "Attacking"
     df["Annotation_Subcategory"] = "Build up"
     if period_col is not None:

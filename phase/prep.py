@@ -7,8 +7,11 @@ Output npz keys
   player_is_gk (2, C)   goalkeeper flag per player column (aligned with player_cols)
   slot_col (T, 2, 11)   player column held by each slot (index into player_cols[team]), -1 = empty
   player_cols (2, C)    player column names per team ('home_home_7'), '' = padding
-  ball   (T, 3)         ball xyz
+  ball   (T, 3)         ball xyz (gaps <= 0.5 s in play interpolated, other missing frames 0)
   ball_v (T, 2)
+  ball_valid (T,)       ball xy known (measured or interpolated)
+  ball_missing_play, ball_gap_max_s, ball_interp_play   scalars: share of frames in play (ball alive) without
+                        ball xy, longest such run (s), share of frames in play interpolated
   alive  (T,)           ball in play
   period (T,)           1, 2, ... (extra time 3, 4, ...), 0 = no players (break)
   attack_sign (P+1,)    per period: +1 if HOME attacks +x (index 0 unused, length >= 3)
@@ -156,6 +159,29 @@ def home_attack_sign(d: dict, idx) -> np.ndarray:
     return np.where(sign == 0, 1.0, sign)
 
 
+def fill_ball_gaps(ball: np.ndarray, alive: np.ndarray, max_gap_s: float = 0.5, hz: float = SRC_HZ):
+    """Linear interpolation of ball gaps (no x or y) of at most max_gap_s that lie inside play (alive on every
+    frame, known ball on both sides). Returns the filled copy and the interpolated-frame mask."""
+    ball = ball.copy()
+    miss = ~np.isfinite(ball[:, :2]).all(1)
+    filled = np.zeros(len(ball), bool)
+    for a, b in _runs(miss):
+        if a > 0 and b < len(ball) and b - a <= max_gap_s * hz and alive[a:b].all():
+            w = (np.arange(a, b) - (a - 1)) / (b - (a - 1))
+            ball[a:b] = (1 - w)[:, None] * ball[a - 1] + w[:, None] * ball[b]
+            filled[a:b] = True
+    return ball, filled
+
+
+def ball_gap_stats(ball: np.ndarray, alive: np.ndarray, filled: np.ndarray, hz: float = SRC_HZ) -> dict:
+    """Missing ball xy while the ball is in play (before interpolation): share of frames, longest run (s)."""
+    miss = ~np.isfinite(ball[:, :2]).all(1) & alive
+    n = max(int(alive.sum()), 1)
+    longest = max((b - a for a, b in _runs(miss)), default=0)
+    return dict(ball_missing_play=float(miss.sum() / n), ball_gap_max_s=float(longest / hz),
+                ball_interp_play=float((filled & alive).sum() / n))
+
+
 def goalkeeper_columns(xy: np.ndarray, period: np.ndarray, attack_sign: np.ndarray, team: int, hz: float = SRC_HZ,
                        min_s: float = 60.0, half_length: float = 52.5) -> np.ndarray:
     """Goalkeeper flag per player column of one team, without a roster.
@@ -257,7 +283,10 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
             warnings.warn(f"{team}: {bad:.1%} of frames with the ball in play do not have exactly one goalkeeper on the "
                           f"pitch (goalkeeper columns {gks}{'' if roster is not None else ', no roster'})")
 
-    ball = df[["Ball_X", "Ball_Y", "Ball_Z"]].to_numpy(float)
+    ball_raw = df[["Ball_X", "Ball_Y", "Ball_Z"]].to_numpy(float)
+    alive_src = df["ball_status"].to_numpy() == "alive"
+    ball, filled = fill_ball_gaps(ball_raw, alive_src)
+    ball_qc = ball_gap_stats(ball_raw, alive_src, filled)
     ball_v = _smooth(np.gradient(ball[:, :2], axis=0) * SRC_HZ, 5)
 
     cat = df["Annotation_Category"].fillna("").map(_first)
@@ -278,6 +307,8 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
         player_is_gk=player_is_gk,
         ball=np.nan_to_num(ball[idx]).astype(np.float32),
         ball_v=np.nan_to_num(ball_v[idx]).astype(np.float32),
+        ball_valid=np.isfinite(ball[idx, :2]).all(1),
+        **{k: np.float32(v) for k, v in ball_qc.items()},
         alive=alive,
         period=per.astype(np.int8),
         attack_sign=attack_sign.astype(np.float32),
@@ -302,6 +333,8 @@ if __name__ == "__main__":
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, **d)
     lab = d["label"]
+    print(f"ball in play: {d['ball_missing_play']:.2%} of frames without ball xy, longest gap "
+          f"{d['ball_gap_max_s']:.1f} s, {d['ball_interp_play']:.2%} interpolated (gaps <= 0.5 s)")
     print(f"T={len(lab)} @ {HZ} Hz | labeled {np.mean(lab >= 0):.1%} | "
           f"attack_sign={d['attack_sign'][1:]} | class counts "
           + str({CLASSES[c]: int((lab == c).sum()) for c in range(4)}))
