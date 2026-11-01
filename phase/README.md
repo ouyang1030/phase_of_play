@@ -52,6 +52,9 @@ across a dead ball need no confirmation. Both runs report the label agreement of
   minute after the half-time whistle and the line-up before the second-half kick-off as play (Ajax–PSV: 1848
   frames at 12.5 Hz, 30 of them "alive"). Frames outside a period now take the play direction of the nearest
   period in `features` / `hazard` (before: home attacks +x).
+- 2026-11: ball positions that the provider held while the ball was moving (exact repeat after a step > 2 m/s;
+  `ball_held_play`, `ball_held_max_s`) are interpolated like gaps (≤ 0.5 s). Exact repeats of a ball at rest or
+  rolling slowly (1 cm resolution) are real and kept. Ajax–PSV: 15 single frames.
 
 ## Changes that alter training results
 - 2026-11: the auxiliary possession target is the annotators' possession (`--poss_target label`). All earlier

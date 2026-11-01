@@ -9,9 +9,11 @@ Output npz keys
   player_cols (2, C)    player column names per team ('home_home_7'), '' = padding
   ball   (T, 3)         ball xyz (gaps <= 0.5 s in play interpolated, other missing frames 0)
   ball_v (T, 2)
-  ball_valid (T,)       ball xy known (measured or interpolated)
+  ball_valid (T,)       ball xy known (measured or interpolated); False on held frames that could not be interpolated
   ball_missing_play, ball_gap_max_s, ball_interp_play   scalars: share of frames in play (ball alive) without
                         ball xy, longest such run (s), share of frames in play interpolated
+  ball_held_play, ball_held_max_s   scalars: share of frames in play where the provider held the last ball position
+                        (ball_holds), longest such run (s); held runs <= 0.5 s are interpolated like gaps
   alive  (T,)           ball in play
   period (T,)           1, 2, ... (extra time 3, 4, ...), 0 = outside a period (break) or no players
   attack_sign (P+1,)    per period: +1 if HOME attacks +x (index 0 unused, length >= 3)
@@ -200,6 +202,21 @@ def fill_ball_gaps(ball: np.ndarray, alive: np.ndarray, max_gap_s: float = 0.5, 
     return ball, filled
 
 
+def ball_holds(ball: np.ndarray, alive: np.ndarray, v_min: float = 2.0, hz: float = SRC_HZ) -> np.ndarray:
+    """Frames on which the provider apparently repeated the last ball position: in play, xyz exactly equal to the
+    previous frame right after a step faster than v_min m/s. A ball at rest or rolling slowly repeats its
+    position at 1 cm resolution too (Ajax-PSV: 0.4% of frames in play, median speed 0.25 m/s); those runs, and a
+    ball kicked from rest, are not holds."""
+    ball = np.asarray(ball, float)
+    same = np.r_[False, (ball[1:] == ball[:-1]).all(1)] & np.isfinite(ball[:, :2]).all(1) & alive
+    step = np.r_[np.nan, np.linalg.norm(np.diff(ball[:, :2], axis=0), axis=1) * hz]  # step[t]: t-1 -> t, m/s
+    held = np.zeros(len(ball), bool)
+    for a, b in _runs(same):
+        if a >= 2 and step[a - 1] > v_min:
+            held[a:b] = True
+    return held
+
+
 def ball_gap_stats(ball: np.ndarray, alive: np.ndarray, filled: np.ndarray, hz: float = SRC_HZ) -> dict:
     """Missing ball xy while the ball is in play (before interpolation): share of frames, longest run (s)."""
     miss = ~np.isfinite(ball[:, :2]).all(1) & alive
@@ -322,8 +339,18 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
 
     ball_raw = df[["Ball_X", "Ball_Y", "Ball_Z"]].to_numpy(float)
     alive_src = df["ball_status"].to_numpy() == "alive"
-    ball, filled = fill_ball_gaps(ball_raw, alive_src)
-    ball_qc = ball_gap_stats(ball_raw, alive_src, filled)
+    held = ball_holds(ball_raw, alive_src)
+    short = np.zeros(len(held), bool)  # held runs that fit the gap rule are interpolated, longer ones kept
+    for a, b in _runs(held):
+        short[a:b] = b - a <= 0.5 * SRC_HZ
+    ball_in = ball_raw.copy()
+    ball_in[short] = np.nan
+    ball, filled = fill_ball_gaps(ball_in, alive_src)
+    ball_qc = ball_gap_stats(ball_raw, alive_src, filled & ~held)
+    n_play = max(int(alive_src.sum()), 1)
+    ball_qc.update(ball_held_play=float(held.sum() / n_play),
+                   ball_held_max_s=float(max((b - a for a, b in _runs(held)), default=0) / SRC_HZ))
+    ball_ok = np.isfinite(ball[:, :2]).all(1) & ~(held & ~short)
     ball_v = _smooth(np.gradient(ball[:, :2], axis=0) * SRC_HZ, 5)
 
     cat = df["Annotation_Category"].fillna("").map(_first)
@@ -344,7 +371,7 @@ def load(csv_path: str | Path, min_break_s: float = 60.0, min_period_s: float = 
         player_is_gk=player_is_gk,
         ball=np.nan_to_num(ball[idx]).astype(np.float32),
         ball_v=np.nan_to_num(ball_v[idx]).astype(np.float32),
-        ball_valid=np.isfinite(ball[idx, :2]).all(1),
+        ball_valid=ball_ok[idx],
         **{k: np.float32(v) for k, v in ball_qc.items()},
         alive=alive,
         period=per.astype(np.int8),
@@ -373,7 +400,8 @@ if __name__ == "__main__":
     np.savez_compressed(a.out, **d)
     lab = d["label"]
     print(f"ball in play: {d['ball_missing_play']:.2%} of frames without ball xy, longest gap "
-          f"{d['ball_gap_max_s']:.1f} s, {d['ball_interp_play']:.2%} interpolated (gaps <= 0.5 s)")
+          f"{d['ball_gap_max_s']:.1f} s, {d['ball_interp_play']:.2%} interpolated (gaps <= 0.5 s); "
+          f"{d['ball_held_play']:.3%} held by the provider (longest {d['ball_held_max_s']:.2f} s)")
     print("periods (12.5 Hz frames):", {int(p): (int(np.flatnonzero(d["period"] == p)[0]),
                                                    int(np.flatnonzero(d["period"] == p)[-1]))
                                          for p in np.unique(d["period"]) if p > 0})

@@ -50,3 +50,49 @@ def test_no_gap(tmp_path):
     d, truth = load(tmp_path, gaps=[])
     assert d["ball_valid"].all() and d["ball_missing_play"] == 0 and d["ball_gap_max_s"] == 0
     assert np.allclose(d["ball"], truth[::2], atol=1e-4)
+
+
+# ---------------------------------------------------------------- provider holds (repeated ball position)
+def fast_ball(v=10.0):
+    t = np.arange(T, dtype=float)
+    return np.stack([t * v / 25 - 50, np.full(T, 3.0), np.full(T, 0.2)], 1)
+
+
+def hold(ball, a, b):
+    ball = ball.copy()
+    ball[a:b] = ball[a - 1]  # the provider repeats the last position on [a, b)
+    return ball
+
+
+def test_ball_holds_only_where_the_ball_was_moving():
+    alive = np.ones(T, bool)
+    assert np.flatnonzero(prep.ball_holds(hold(fast_ball(), 200, 203), alive)).tolist() == [200, 201, 202]
+    slow = np.round(fast_ball(0.25), 2)  # 1 cm per frame at 0.25 m/s, rounded to cm: exact repeats
+    slow[::3] = np.roll(slow, 1, 0)[::3]
+    assert not prep.ball_holds(slow, alive).any()
+    rest_then_kick = fast_ball()
+    rest_then_kick[:300] = rest_then_kick[300]  # ball on the spot, kicked at frame 300
+    assert not prep.ball_holds(rest_then_kick, alive).any()
+    dead = alive.copy()
+    dead[190:210] = False
+    assert not prep.ball_holds(hold(fast_ball(), 200, 203), dead).any()
+
+
+def test_short_hold_is_interpolated(tmp_path):
+    truth = fast_ball()
+    path = fused_csv(tmp_path / "f.csv", T=T, ball=hold(truth, 200, 204))
+    d = prep.load(path, **FAST)
+    assert np.allclose(d["ball"], truth[::2], atol=1e-4) and d["ball_valid"].all()
+    assert d["ball_held_play"] == pytest.approx(4 / T) and d["ball_held_max_s"] == pytest.approx(4 / 25)
+    assert d["ball_missing_play"] == 0 and d["ball_interp_play"] == 0  # holds are counted on their own
+    assert np.allclose(d["ball_v"][105:395, 0], 10.0, atol=1e-3)
+
+
+def test_long_hold_is_kept_but_not_valid(tmp_path):
+    truth = fast_ball()
+    held = hold(truth, 200, 220)  # 0.8 s
+    d = prep.load(fused_csv(tmp_path / "f.csv", T=T, ball=held), **FAST)
+    assert np.allclose(d["ball"], held[::2], atol=1e-4)  # values kept (not zeroed)
+    v = d["ball_valid"]
+    assert not v[100:110].any() and v[:100].all() and v[110:].all()
+    assert d["ball_held_max_s"] == pytest.approx(0.8)
