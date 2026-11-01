@@ -95,11 +95,14 @@ def meta_json(path, home=("Ajax", 10), away=("PSV", 20), period_start=None, **kw
     return path
 
 
-def adj_dir(path, T25=800):
+def adj_dir(path, T25=800, sub=True):
     """Codebook-v1 adjudication dir (as codebook_v1.convert + make_pack write it) for a 32 s match at 25 Hz.
 
     Coder A: IP [0, 300), TD [300, 400), OP [400, 800); coder B: IP [0, 320), TD [320, 450), OP [450, 800);
-    the ball is dead on [600, 650). Disagreements [300, 320) and [400, 450) are the clips c000 and c001."""
+    the ball is dead on [600, 650). Disagreements [300, 320) and [400, 450) are the clips c000 and c001.
+    Subcategories (sub=False: no subA / subB columns, as before item #9): A IP Build up [0, 150) then
+    Progression, B Build up throughout IP; both TD Counterpressing; A OP Mid Block, B OP Mid Block before the dead
+    ball and Low Block after it."""
     import json
     A = np.r_[np.zeros(300), np.full(100, 3), np.full(T25 - 400, 2)].astype(int)
     B = np.r_[np.zeros(320), np.full(130, 3), np.full(T25 - 450, 2)].astype(int)
@@ -110,8 +113,15 @@ def adj_dir(path, T25=800):
     src = np.where(A == B, "agree", "pending").astype(object)
     src[~alive] = "inactive"
     path.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"Frame": np.arange(T25), "alive": alive.astype(int), "A": A, "B": B, "final": final,
-                  "src": src}).to_csv(path / "labels_v1_25hz.csv", index=False)
+    cols = {"Frame": np.arange(T25), "alive": alive.astype(int), "A": A, "B": B, "final": final, "src": src}
+    if sub:
+        sub_of = {0: 0, 3: 8, 2: 6}  # Build up, Counterpressing, Mid Block
+        sA = np.array([sub_of.get(x, -1) for x in A])
+        sB = np.array([sub_of.get(x, -1) for x in B])
+        sA[150:300] = 1  # Progression
+        sB[650:] = np.where(B[650:] == 2, 7, sB[650:])  # Low Block
+        cols.update(subA=sA, subB=sB)
+    pd.DataFrame(cols).to_csv(path / "labels_v1_25hz.csv", index=False)
     pd.DataFrame([dict(clip_id="c000", start=300, end=319, dur_s=0.8, type="BOUNDARY", A="TD@300", B="IP@300"),
                   dict(clip_id="c001", start=400, end=449, dur_s=2.0, type="BOUNDARY", A="OP@400", B="TD@400")]
                  ).to_csv(path / "clips.csv", index=False)
