@@ -275,9 +275,10 @@ def run(cfg):
     m = gt >= 0
     agree = {n: float(((np.nan_to_num(p[L0:L1], nan=0)[m] == 0) == np.isin(gt[m], (0, 1))).mean())
              for n, p in (("heuristic", poss_heur), ("events", poss))}
+    ci = E.bootstrap(gt, {k: preds[k] for k in results}, hz, n_boot=cfg["n_boot"])
     summary = dict(config=cfg, folds=fold_info, possession_label_agreement=agree,
                    n_turnovers=int(len(to)), n_turnovers_dead=int(to.dead.sum()),
-                   durations=dur_stats, results=results)
+                   durations=dur_stats, results=results, ci=ci)
     out = Path(cfg["out"])
     out.mkdir(parents=True, exist_ok=True)
     (out / "results.json").write_text(json.dumps(summary, indent=2))
@@ -310,5 +311,6 @@ if __name__ == "__main__":
     ap.add_argument("--buffer_s", type=float, default=15)
     ap.add_argument("--max_s", type=float, default=30)
     ap.add_argument("--C", type=float, default=0.1)
+    ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")
     cfg = vars(ap.parse_args())
     print_table(run(cfg))

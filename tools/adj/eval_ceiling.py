@@ -61,5 +61,10 @@ dis = both & (A != B)
 print(f'\ndisputed frames (both coded, A!=B): {dis.sum()} = {dis.sum()/both.sum():.1%} of both-coded')
 for k, p in preds.items():
     print(f'  {k:20s} agrees with A {np.mean(p[dis]==A[dis]):.2f} | with B {np.mean(p[dis]==B[dis]):.2f} | neither {np.mean((p[dis]!=A[dis])&(p[dis]!=B[dis])):.2f}')
+# bootstrap over eval runs of each reference, paired across methods (human = the other coder)
+pr0 = {k: np.where(p >= 0, p, 0) for k, p in preds.items()}
+ci = {'ADJ (adj frames)': E.bootstrap(np.where(ADJ >= 0, ADJ, -1), pr0, hz),
+      'A (both coded)': E.bootstrap(np.where(both, A, -1), {'HUMAN B': B, **pr0}, hz),
+      'B (both coded)': E.bootstrap(np.where(both, B, -1), {'HUMAN A': A, **pr0}, hz)}
 name = sys.argv[-1].split('=')[0] + '_eval' if len(sys.argv) > 2 else 'eval_ceiling'
-(D / (name + ('_25hz' if HZ25 else '') + '.json')).write_text(json.dumps(rows, indent=1))
+(D / (name + ('_25hz' if HZ25 else '') + '.json')).write_text(json.dumps(dict(results=rows, ci=ci), indent=1))

@@ -243,14 +243,12 @@ def run(cfg):
 
     gt = label[L0:L1]
     pred_arg = oof.argmax(1)
-    results = {
-        "timer_tau*": E.evaluate(gt, pred_timer_star, hz),
-        "model_argmax": E.evaluate(gt, pred_arg, hz),
-        "model_modefilter5s": E.evaluate(gt, E.mode_filter(pred_arg, int(5 * hz)), hz),
-        "model_hsmm": E.evaluate(gt, pred_hsmm, hz),
-    }
+    preds = {"timer_tau*": pred_timer_star, "model_argmax": pred_arg,
+             "model_modefilter5s": E.mode_filter(pred_arg, int(5 * hz)), "model_hsmm": pred_hsmm}
     for tau in (3, 5, 6, 9.34):
-        results[f"timer_{tau}s"] = E.evaluate(gt, E.timer_baseline(poss_home, tau, hz)[L0:L1], hz)
+        preds[f"timer_{tau}s"] = E.timer_baseline(poss_home, tau, hz)[L0:L1]
+    results = {k: E.evaluate(gt, v, hz) for k, v in preds.items()}
+    ci = E.bootstrap(gt, preds, hz, n_boot=cfg["n_boot"], seed=cfg["seed"])
     # possession heuristic quality vs labels (est_attack/def_to_att = home in possession)
     ph = np.nan_to_num(poss_home[L0:L1], nan=0)
     m = gt >= 0
@@ -261,7 +259,7 @@ def run(cfg):
     np.savez_compressed(out_dir / "oof.npz", probs=oof, bnd=oof_bnd, gt=gt, hsmm=pred_hsmm,
                         timer_star=pred_timer_star, poss_home=poss_home[L0:L1], alive=d["alive"][L0:L1], hz=hz)
     summary = dict(config=cfg, folds=fold_info, possession_label_agreement=poss_agree,
-                   elapsed_s=time.time() - t_start, results=results)
+                   elapsed_s=time.time() - t_start, results=results, ci=ci)
     (out_dir / "results.json").write_text(json.dumps(summary, indent=2))
     return summary
 
@@ -309,6 +307,7 @@ if __name__ == "__main__":
     ap.add_argument("--head", default="flat", choices=["flat", "hier"], help="hier: p(possession) x p(organization | possession)")
     ap.add_argument("--mark", action="store_true", help="add 1:1 marking edges (Hungarian outfield assignment)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--n_boot", type=int, default=2000, help="bootstrap replicates over eval runs (results.json ci)")
     cfg = vars(ap.parse_args())
     s = run(cfg)
     print_table(s)

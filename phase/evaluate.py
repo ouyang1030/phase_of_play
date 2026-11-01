@@ -335,89 +335,219 @@ def eval_runs(y: np.ndarray, max_gap: int):
     return list(zip(starts, ends))
 
 
-def boundaries(y: np.ndarray, runs) -> np.ndarray:
-    out = []
+def typed_boundaries(y: np.ndarray, runs) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Label changes inside each run, unlabeled frames skipped: (frame, class before, class after)."""
+    pos, frm, to = [], [], []
     for a, b in runs:
         seg = y[a:b]
         idx = np.flatnonzero(seg >= 0)
         v = seg[idx]
         ch = np.flatnonzero(v[1:] != v[:-1]) + 1
-        out += list(a + idx[ch])
-    return np.array(out, int)
+        pos += list(a + idx[ch])
+        frm += list(v[ch - 1])
+        to += list(v[ch])
+    return np.array(pos, int), np.array(frm, int), np.array(to, int)
+
+
+def boundaries(y: np.ndarray, runs) -> np.ndarray:
+    return typed_boundaries(y, runs)[0]
+
+
+def match_boundaries(gt_b, pr_b, tol: int) -> int:
+    """Largest number of (gt, pred) pairs with |gt - pred| <= tol, each boundary in at most one pair.
+
+    Two pointers over both sorted lists: a boundary that cannot reach the other list's current one cannot reach
+    any later one either, and pairing the two earliest reachable ones never loses a pair. Independent of the
+    order in which the boundaries are given."""
+    g, p = np.sort(np.asarray(gt_b)), np.sort(np.asarray(pr_b))
+    i = j = tp = 0
+    while i < len(g) and j < len(p):
+        if abs(int(g[i]) - int(p[j])) <= tol:
+            tp, i, j = tp + 1, i + 1, j + 1
+        elif p[j] < g[i]:
+            j += 1
+        else:
+            i += 1
+    return tp
+
+
+def match_typed_boundaries(gt_tb, pr_tb, tol: int) -> int:
+    """As match_boundaries, but a pair also needs the same (class before, class after)."""
+    (gp, gf, gt), (pp, pf, pt) = gt_tb, pr_tb
+    tp = 0
+    for f, t in set(zip(gf.tolist(), gt.tolist())) & set(zip(pf.tolist(), pt.tolist())):
+        tp += match_boundaries(gp[(gf == f) & (gt == t)], pp[(pf == f) & (pt == t)], tol)
+    return tp
+
+
+def _prf(tp, n_pred, n_gt):
+    """Precision, recall, F1 from counts (arrays allowed); no boundaries at all on either side -> 1."""
+    tp, n_pred, n_gt = (np.asarray(x, float) for x in (tp, n_pred, n_gt))
+    prec, rec = tp / np.maximum(n_pred, 1), tp / np.maximum(n_gt, 1)
+    f1 = 2 * prec * rec / np.maximum(prec + rec, 1e-9)
+    empty = (n_pred == 0) & (n_gt == 0)
+    return np.where(empty, 1.0, prec), np.where(empty, 1.0, rec), np.where(empty, 1.0, f1)
 
 
 def boundary_f1(gt_b, pr_b, tol: int):
-    if len(gt_b) == 0 and len(pr_b) == 0:
-        return 1.0, 1.0, 1.0
-    used = np.zeros(len(gt_b), bool)
-    tp = 0
-    for p in pr_b:
-        if len(gt_b) == 0:
-            break
-        d = np.abs(gt_b - p).astype(float)
-        d[used] = np.inf
-        j = int(np.argmin(d))
-        if d[j] <= tol:
-            used[j] = True
-            tp += 1
-    prec = tp / max(len(pr_b), 1)
-    rec = tp / max(len(gt_b), 1)
-    return prec, rec, 2 * prec * rec / max(prec + rec, 1e-9)
+    """(precision, recall, F1) of predicted boundaries within +-tol frames of a GT boundary (maximum matching)."""
+    return tuple(float(x) for x in _prf(match_boundaries(gt_b, pr_b, tol), len(pr_b), len(gt_b)))
 
 
-def segmental_f1(gt, pr, runs, iou_thr):
-    """MS-TCN style F1@IoU over segments inside annotated stretches."""
-    tp = fp = fn = 0
-    for a, b in runs:
-        g = gt[a:b].copy()
-        p = np.where(g >= 0, pr[a:b], -1)
-        gs, ps = segments(g), segments(p)
+def _segment_counts(g: np.ndarray, p: np.ndarray, iou_thrs) -> np.ndarray:
+    """MS-TCN F1@IoU counts (tp, fp, fn) per threshold for one stretch; p is already masked to g >= 0."""
+    gs, ps = segments(g), segments(p)
+    out = np.zeros((len(iou_thrs), 3), int)
+    for k, thr in enumerate(iou_thrs):
         hit = np.zeros(len(gs), bool)
+        tp = fp = 0
         for s, e, c in ps:
             best, bj = 0.0, -1
             for j, (s2, e2, c2) in enumerate(gs):
                 if c2 != c:
                     continue
-                inter = max(0, min(e, e2) - max(s, s2))
-                union = max(e, e2) - min(s, s2)
-                iou = inter / union
+                iou = max(0, min(e, e2) - max(s, s2)) / (max(e, e2) - min(s, s2))
                 if iou > best:
                     best, bj = iou, j
-            if best >= iou_thr and not hit[bj]:
+            if best >= thr and not hit[bj]:
                 tp += 1
                 hit[bj] = True
             else:
                 fp += 1
-        fn += int((~hit).sum())
-    p_ = tp / max(tp + fp, 1)
-    r_ = tp / max(tp + fn, 1)
-    return 2 * p_ * r_ / max(p_ + r_, 1e-9)
+        out[k] = tp, fp, int((~hit).sum())
+    return out
+
+
+def segmental_f1(gt, pr, runs, iou_thr):
+    """MS-TCN style F1@IoU over segments inside annotated stretches."""
+    c = sum((_segment_counts(gt[a:b], np.where(gt[a:b] >= 0, pr[a:b], -1), (iou_thr,))[0] for a, b in runs),
+            np.zeros(3, int))
+    return float(_prf(c[0], c[0] + c[1], c[0] + c[2])[2])
+
+
+# ---------------------------------------------------------------- evaluation from sufficient statistics
+TOLS_S = (0.5, 1, 2, 3)  # boundary tolerances (s)
+IOU_THRS = (0.1, 0.25, 0.5)  # segmental F1 thresholds
+
+
+def run_stats(gt: np.ndarray, pr: np.ndarray, hz: float, runs=None) -> dict:
+    """Sufficient statistics per eval run (annotated stretch, unlabeled gaps <= 1 s bridged), one row per run:
+    cm (R, K, K) confusion matrix (gt x pred); bnd_n_gt / bnd_n_pred (R,); bnd_tp / bnd_typed_tp (R, len(TOLS_S));
+    seg (R, len(IOU_THRS), 3) tp / fp / fn. Boundaries are matched inside a run only.
+    metrics() of the column sums is evaluate(); bootstrap() re-weights the rows."""
+    if runs is None:
+        runs = eval_runs(gt, max_gap=int(hz))
+    tols = [int(round(t * hz)) for t in TOLS_S]
+    R = len(runs)
+    st = dict(cm=np.zeros((R, K, K)), bnd_n_gt=np.zeros(R), bnd_n_pred=np.zeros(R),
+              bnd_tp=np.zeros((R, len(tols))), bnd_typed_tp=np.zeros((R, len(tols))),
+              seg=np.zeros((R, len(IOU_THRS), 3)))
+    for r, (a, b) in enumerate(runs):
+        g = gt[a:b]
+        p = np.where(g >= 0, pr[a:b], -1)
+        m = g >= 0
+        st["cm"][r] = np.bincount(g[m].astype(int) * K + p[m].astype(int), minlength=K * K).reshape(K, K)
+        gb, pb = typed_boundaries(g, [(0, b - a)]), typed_boundaries(p, [(0, b - a)])
+        st["bnd_n_gt"][r], st["bnd_n_pred"][r] = len(gb[0]), len(pb[0])
+        for k, tol in enumerate(tols):
+            st["bnd_tp"][r, k] = match_boundaries(gb[0], pb[0], tol)
+            st["bnd_typed_tp"][r, k] = match_typed_boundaries(gb, pb, tol)
+        st["seg"][r] = _segment_counts(g, p, IOU_THRS)
+    return st
+
+
+def metrics(s: dict) -> dict:
+    """Metrics from summed sufficient statistics (run_stats summed over runs). Leading axes of the arrays are kept
+    (e.g. bootstrap replicates): every value is then an array over them."""
+    cm = np.asarray(s["cm"], float)
+    n = cm.sum((-2, -1))
+    tp = np.diagonal(cm, axis1=-2, axis2=-1)
+    rows, cols = cm.sum(-1), cm.sum(-2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        f1c = np.where(rows + cols > 0, 2 * tp / np.maximum(rows + cols, 1e-12), 0.0)
+        acc = tp.sum(-1) / n
+        pe = (rows * cols).sum(-1) / n ** 2
+        kappa = (acc - pe) / (1 - pe)
+    tr, est = list(TRANSITIONS), [c for c in range(K) if c not in TRANSITIONS]
+    ttp = cm[..., tr, :][..., tr].sum((-2, -1))
+    tfp = cm[..., est, :][..., tr].sum((-2, -1))
+    tfn = cm[..., tr, :][..., est].sum((-2, -1))
+    res = dict(n_frames=n, acc=acc, macro_f1=f1c.mean(-1), kappa=kappa, f1_per_class=f1c,
+               transition_f1=np.where(2 * ttp + tfp + tfn > 0, 2 * ttp / np.maximum(2 * ttp + tfp + tfn, 1e-12), 0.0),
+               n_gt_boundaries=np.asarray(s["bnd_n_gt"]), n_pred_boundaries=np.asarray(s["bnd_n_pred"]))
+    for k, tol_s in enumerate(TOLS_S):
+        res[f"bnd_f1@{tol_s}s"] = _prf(s["bnd_tp"][..., k], s["bnd_n_pred"], s["bnd_n_gt"])[2]
+        res[f"bnd_typed_f1@{tol_s}s"] = _prf(s["bnd_typed_tp"][..., k], s["bnd_n_pred"], s["bnd_n_gt"])[2]
+    for k, thr in enumerate(IOU_THRS):
+        c = np.asarray(s["seg"])[..., k, :]
+        res[f"seg_f1@{thr}"] = _prf(c[..., 0], c[..., 0] + c[..., 1], c[..., 0] + c[..., 2])[2]
+    return res
+
+
+SCALAR_METRICS = ("acc", "macro_f1", "kappa", "transition_f1", *(f"bnd_f1@{t}s" for t in TOLS_S),
+                  *(f"bnd_typed_f1@{t}s" for t in TOLS_S), *(f"seg_f1@{t}" for t in IOU_THRS))
+
+
+def _plain(res: dict) -> dict:
+    out = {}
+    for k, v in res.items():
+        v = np.asarray(v)
+        out[k] = [float(x) for x in v] if v.ndim else (int(v) if k.startswith("n_") else float(v))
+    return out
 
 
 def evaluate(gt: np.ndarray, pr: np.ndarray, hz: float, mask: np.ndarray | None = None) -> dict:
-    """All metrics on frames where gt >= 0 (and mask)."""
-    gt = gt.copy()
+    """All metrics on frames where gt >= 0 (and mask): frame (acc, macro / per-class / transition F1, kappa),
+    boundary F1 at TOLS_S (bnd_f1: position only; bnd_typed_f1: also the same class before and after) and
+    segmental F1 at IOU_THRS. Boundaries and segments are matched inside each eval run."""
+    gt = np.asarray(gt).copy()
     if mask is not None:
         gt[~mask] = -1
-    m = gt >= 0
-    y, p = gt[m], pr[m]
-    per = f1_score(y, p, labels=range(K), average=None, zero_division=0)
+    st = run_stats(gt, np.asarray(pr), hz)
+    return _plain(metrics({k: v.sum(0) for k, v in st.items()}))
+
+
+def bootstrap(gt: np.ndarray, preds: dict, hz: float, mask: np.ndarray | None = None, n_boot: int = 2000,
+              seed: int = 0, level: float = 0.95) -> dict:
+    """Cluster bootstrap over eval runs (annotated stretches), paired across methods.
+
+    Sufficient statistics are computed once per run and method (run_stats); each replicate draws multinomial
+    run weights (R draws with replacement out of R runs) and sums the weighted statistics, the same weights
+    for every method. Returns per method the percentile interval of each metric (`ci`), and per pair of
+    methods "a - b" the point difference, its interval and P(diff <= 0) over replicates (`diff`).
+    """
+    gt = np.asarray(gt).copy()
+    if mask is not None:
+        gt[~mask] = -1
     runs = eval_runs(gt, max_gap=int(hz))
-    gb = boundaries(gt, runs)
-    pr_masked = np.where(gt >= 0, pr, -1)
-    pb = boundaries(pr_masked, runs)
-    res = dict(
-        n_frames=int(m.sum()),
-        acc=float((y == p).mean()),
-        macro_f1=float(per.mean()),
-        kappa=float(cohen_kappa_score(y, p)),
-        f1_per_class=[float(x) for x in per],
-        transition_f1=float(f1_score(np.isin(y, TRANSITIONS), np.isin(p, TRANSITIONS), zero_division=0)),
-        n_gt_boundaries=int(len(gb)),
-        n_pred_boundaries=int(len(pb)),
-    )
-    for tol_s in (0.5, 1, 2, 3):
-        res[f"bnd_f1@{tol_s}s"] = float(boundary_f1(gb, pb, int(round(tol_s * hz)))[2])
-    for thr in (0.1, 0.25, 0.5):
-        res[f"seg_f1@{thr}"] = float(segmental_f1(gt, pr, runs, thr))
-    return res
+    R = len(runs)
+    stats = {name: run_stats(gt, np.asarray(p), hz, runs) for name, p in preds.items()}
+    W = np.random.default_rng(seed).multinomial(R, np.full(R, 1.0 / max(R, 1)), size=n_boot).astype(float)
+    point = {name: metrics({k: v.sum(0) for k, v in st.items()}) for name, st in stats.items()}
+    boot = {name: metrics({k: np.tensordot(W, v, axes=(1, 0)) for k, v in st.items()}) for name, st in stats.items()}
+    q = 100 * np.array([(1 - level) / 2, (1 + level) / 2])
+
+    def interval(x):
+        x = np.asarray(x, float)
+        with np.errstate(invalid="ignore"):
+            return np.nanpercentile(x, q, axis=0).T.tolist() if np.isfinite(x).any() else [np.nan, np.nan]
+
+    ci = {}
+    for name, b in boot.items():
+        ci[name] = {m: dict(point=float(point[name][m]), lo=interval(b[m])[0], hi=interval(b[m])[1])
+                    for m in SCALAR_METRICS}
+        ci[name]["f1_per_class"] = [dict(point=float(point[name]["f1_per_class"][c]), lo=lo, hi=hi)
+                                    for c, (lo, hi) in enumerate(interval(b["f1_per_class"]))]
+    diff = {}
+    names = list(preds)
+    for i, a in enumerate(names):
+        for b_ in names[i + 1:]:
+            diff[f"{a} - {b_}"] = {}
+            for m in SCALAR_METRICS:
+                dd = np.asarray(boot[a][m], float) - np.asarray(boot[b_][m], float)
+                ok = np.isfinite(dd)
+                lo, hi = interval(dd)
+                diff[f"{a} - {b_}"][m] = dict(diff=float(point[a][m] - point[b_][m]), lo=lo, hi=hi,
+                                              p_le_0=float(np.mean(dd[ok] <= 0)) if ok.any() else float("nan"))
+    return dict(unit="eval run (annotated stretch, unlabeled gaps <= 1 s bridged)", n_units=R, n_boot=n_boot,
+                level=level, seed=seed, ci=ci, diff=diff)
