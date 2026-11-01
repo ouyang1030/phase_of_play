@@ -1,13 +1,18 @@
 """Data checks for STUDY1_PLAN §7 assumptions."""
+import argparse
 import sys
 from pathlib import Path
 import numpy as np, pandas as pd
 from scipy.optimize import linear_sum_assignment
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from phase import evaluate as E
-D = Path(sys.argv[1]); FPS = 25
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument('adj_dir', type=Path)
+ap.add_argument('--prefix', required=True, help='npz prefix: <prefix>_{adj,A,B}.npz, e.g. ajax_psv_full (phase.meta.prefix)')
+args = ap.parse_args()
+D = args.adj_dir; FPS = 25
 L = pd.read_csv(D / 'labels_25hz.csv')
-d = np.load(D / 'ajax_psv_full_adj.npz')
+d = np.load(D / f'{args.prefix}_adj.npz')
 alive25 = np.repeat(d['alive'], 2)[:len(L)]
 names = ['ATT', 'D>A', 'DEF', 'A>D']
 
@@ -58,8 +63,8 @@ print(f'frames {len(idx)}: mark edges inside press set {inside / tot:.1%}; mark 
 
 print('\n== (iv) evaluation at 12.5 Hz vs 25 Hz (soft model HSMM, vs A, both-coded)')
 o = np.load(D / 'deep_soft' / 'oof.npz'); L1 = len(o['gt'])
-A12 = np.load(D / 'ajax_psv_full_A.npz')['label'].astype(int)[:L1]
-B12 = np.load(D / 'ajax_psv_full_B.npz')['label'].astype(int)[:L1]
+A12 = np.load(D / f'{args.prefix}_A.npz')['label'].astype(int)[:L1]
+B12 = np.load(D / f'{args.prefix}_B.npz')['label'].astype(int)[:L1]
 m12 = (A12 >= 0) & (B12 >= 0)
 r12 = E.evaluate(np.where(m12, A12, -1), o['hsmm'], 12.5)
 A25, B25 = L.label_A.to_numpy()[:2 * L1], L.label_B.to_numpy()[:2 * L1]

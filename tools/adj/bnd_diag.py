@@ -1,13 +1,18 @@
 """Boundary head as a detector: peaks vs GT boundaries of A (both-coded frames), ASRF-style threshold sweep for diagnosis only."""
+import argparse
 import sys
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from phase import evaluate as E
-D, run = Path(sys.argv[1]), Path(sys.argv[2])
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument('adj_dir', type=Path); ap.add_argument('run', type=Path)
+ap.add_argument('--prefix', required=True, help='npz prefix: <prefix>_{adj,A,B}.npz, e.g. ajax_psv_full (phase.meta.prefix)')
+args = ap.parse_args()
+D, run = args.adj_dir, args.run
 o = np.load(run / 'oof.npz'); hz = float(o['hz']); L1 = len(o['gt'])
-A = np.load(D / 'ajax_psv_full_A.npz')['label'].astype(int)[:L1]
-B = np.load(D / 'ajax_psv_full_B.npz')['label'].astype(int)[:L1]
+A = np.load(D / f'{args.prefix}_A.npz')['label'].astype(int)[:L1]
+B = np.load(D / f'{args.prefix}_B.npz')['label'].astype(int)[:L1]
 both = (A >= 0) & (B >= 0)
 gA = np.where(both, A, -1)
 runs = E.eval_runs(gA, max_gap=int(hz))

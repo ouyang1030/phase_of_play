@@ -3,13 +3,17 @@
 Rules: dead ball -> masked; agreement -> label; disagreement run <= 1 s between agreed sides -> midpoint
 (blips <= 1 s with equal sides -> side label); everything else -> masked (pending human adjudication).
 """
-import sys, json
+import argparse, sys, json
 from pathlib import Path
 import numpy as np, pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from phase import prep
 
-A_CSV, B_CSV, OUT = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument('a_csv'); ap.add_argument('b_csv'); ap.add_argument('out', type=Path)
+ap.add_argument('--prefix', required=True, help='output npz prefix: <prefix>_{adj,A,B}.npz (phase.meta.prefix)')
+args = ap.parse_args()
+A_CSV, B_CSV, OUT = args.a_csv, args.b_csv, args.out
 OUT.mkdir(parents=True, exist_ok=True)
 FPS, TAU, GAP = 25, 25, 5
 U = -2  # not coded (dead ball or alive NONE)
@@ -86,5 +90,5 @@ for name, lab in (('adj', final), ('A', np.where(ca >= 0, ca, -1)), ('B', np.whe
     dd = dict(d)
     dd['label'] = lab[idx].astype(np.int8)
     dd['sub'] = np.where(dd['label'] >= 0, d['sub'], -1).astype(np.int8)
-    np.savez_compressed(OUT / f'ajax_psv_full_{name}.npz', **dd)
+    np.savez_compressed(OUT / f'{args.prefix}_{name}.npz', **dd)
     print(name, 'labeled @12.5Hz', int((dd['label'] >= 0).sum()), 'last', int(np.flatnonzero(dd['label'] >= 0)[-1]))
