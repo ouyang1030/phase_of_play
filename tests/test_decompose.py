@@ -2,6 +2,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from phase import decompose as D
 from phase import episodes as P
@@ -51,3 +52,21 @@ def test_cli_without_events(tmp_path):
     assert s["results"]["labels | oracle"]["macro_f1"] == 1.0
     assert "labels | oracle - labels | timer" in s["ci"]["diff"]
     assert json.loads((tmp_path / "o" / "decompose.json").read_text())["decomposition"]["grammar_loss"] == 0.0
+
+
+def test_runs_fill_their_possession_row(tmp_path):
+    poss, alive, period, label = match(2)
+    npz = tmp_path / "m.npz"
+    np.savez(npz, label=label.astype(np.int8), alive=alive, period=period.astype(np.int8), hz=np.float32(HZ))
+    rd = tmp_path / "run"
+    rd.mkdir()
+    L1 = int(np.flatnonzero(label >= 0)[-1]) + 1
+    np.savez(rd / "oof.npz", pred=label[:L1])
+    (rd / "results.json").write_text(json.dumps({"config": {"poss": "labels"}}))
+    s = D.run(vars(D.parser().parse_args([f"model={rd}", "--npz", str(npz), "--out", str(tmp_path / "o"),
+                                          "--n_boot", "20", "--folds", "3"])))
+    assert s["results"]["labels | model"]["macro_f1"] == 1.0
+    (rd / "oof.npz").unlink()
+    np.savez(rd / "oof.npz", pred=label[:L1 - 5])
+    with pytest.raises(ValueError, match="oof covers"):
+        D.run(vars(D.parser().parse_args([f"model={rd}", "--npz", str(npz), "--out", str(tmp_path / "o")])))

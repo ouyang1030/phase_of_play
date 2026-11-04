@@ -162,3 +162,21 @@ def test_model_and_rule_find_the_organisation_signal(tmp_path):
     f1 = {k: s["results"][k]["macro_f1"] for k in ("timer", "rule", "model")}
     assert mae["model"] < 0.5 * mae["timer"] and mae["rule"] < 0.5 * mae["timer"], mae
     assert f1["model"] > f1["timer"] and f1["rule"] > f1["timer"], f1
+
+
+def test_event_possession_path_uses_the_turnover_table(match, monkeypatch):
+    """--poss events: windows from the event turnover table (dead-ball flag, win group), no labels involved."""
+    d = np.load(match / "m.npz")
+    label = d["label"].astype(int)
+    poss = P.label_possession(label)
+    poss = pd.Series(poss).ffill().bfill().to_numpy()
+    t0 = np.flatnonzero(np.diff(poss) != 0) + 1
+    to = pd.DataFrame(dict(idx=t0, team=poss[t0].astype(int), dead=np.arange(len(t0)) % 3 == 0,
+                           how=np.where(np.arange(len(t0)) % 2, "tackle", "intercept"), x=0.0, y=0.0))
+    monkeypatch.setattr(Du, "possession", lambda cfg, d, label: (poss, to))
+    cfg = vars(Du.parser().parse_args(["--npz", str(match / "m.npz"), "--out", str(match / "ev"), "--events", "x.csv",
+                                       "--folds", "2", "--n_boot", "20", "--no-model"]))
+    s = Du.run(cfg)
+    tab = pd.read_csv(match / "ev" / "episodes.csv")
+    assert s["n_episodes"] == len(to) and set(tab.how) == {"tackle", "intercept"} and tab.dead.any()
+    assert s["results"]["timer"]["macro_f1"] > 0.5  # static players here: the rule has no signal to use

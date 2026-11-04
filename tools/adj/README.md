@@ -26,3 +26,21 @@ no SET_PIECE); `check_s7.py` / `bnd_diag.py` are the one-off checks behind §7. 
 session transcript on 2026-10-26 after the temporary directory was cleared. All of them take `--prefix` (the npz
 prefix, `phase.meta.prefix`, e.g. `ajax_psv_full`): `build_labels.py A.csv B.csv OUT --prefix P`,
 `build_soft.py ADJ_DIR --prefix P`, `check_s7.py ADJ_DIR --prefix P`, `bnd_diag.py ADJ_DIR RUN_DIR --prefix P`.
+
+Better than a human coder (main model of `phase/duration.py`, or any run with `oof.npz`):
+
+```
+python tools/adj/superhuman.py ADJ_DIR --prefix ajax_psv_full noise=artifacts/dur_noise \
+    --l2 A=artifacts/dur_A B=artifacts/dur_B [--third C.npz] --events event_data.csv --meta meta.json --poss_confirm second
+```
+
+- **L1** the model against coder B vs coder A against B, and against A vs B against A, on frames both coded. The
+  adjudicated labels are never the reference (where A and B agree they are A and B).
+- **L2** a run trained on coder A only (`phase.duration --npz <prefix>_A.npz`) against B vs A against B, and the
+  run trained on B against A. Averaging the two coders does not help here: the model never saw the reference.
+- **L3** with `--third`, an independent coder C as reference, on frames all three labelled.
+
+Frames: paired run-level bootstrap. Transition lengths: per episode where model, competitor and reference give an
+exact length, paired episode bootstrap of (human error − model error). Verdict per metric: `exceeds` / `no
+difference` / `below` from the 95% interval. Runs of different length are compared on the common stretch.
+Writes `ADJ_DIR/superhuman.json`. `eval_ceiling.py` also lists `phase.duration` runs (`name=RUN_DIR`, key `pred`).

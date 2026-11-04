@@ -21,6 +21,11 @@ from tracking data, trained on manual labels. Implements STUDY1_PLAN §6–§8 a
 | `train.py` | blocked time CV on the labeled stretch, per-fold τ* and HSMM fit, pooled out-of-fold evaluation |
 | `events.py` | Opta events (databallpy `event_data.csv`) → frames (synced / clock + offset + snap), sync checks (`attrs['sync_report']`), event possession, turnover table (how, where, dead ball) |
 | `hazard.py` | turnover-anchored discrete-time hazard for transition duration (causal features, censoring); timer τ* on heuristic vs event possession; same blocked CV as `train.py` (PLAN §15) |
+| `episodes.py` | labels = possession + one transition length per possession: episode windows, `observe` (the interval a label sequence gives for the length), `reconstruct`, exact frame macro-F1 for any length vector (`EpisodeScorer`), best single change point, `cv_folds` |
+| `decompose.py` | RQ1: 2 × 2 error decomposition, possession (labels / events) × lengths (oracle / timer / `phase.duration` runs) |
+| `concepts.py` | codebook §2.5 criteria C1–C4 as tracking quantities per frame and view; rule baseline (one threshold per criterion + hold time, grid search) with the criterion satisfied last as explanation |
+| `duration.py` | main model: per turnover the distribution of the transition length (targets `label` / `interval` / `noise`), quantile decoding, timer and rule baselines on the same episodes, transition-length metrics; `--no-model` without torch |
+| `endpoint.py` | torch part of `duration.py`: MLP → 1-layer BiGRU → one logit per window frame + "fills the window" (~25k parameters), range and coder-noise likelihoods |
 
 Ablation flags: `--no-graph`, `--no-org`, `--no-timer-feat`, `--temporal {bigru,tcn,none}`, `--no-poss-input`
 (removes every input derived from the input possession: `poss_ref` and `time_since_turnover` from the context
@@ -35,6 +40,42 @@ follows codebook v4.1 §2.4 and counts an open-play gain only once the gaining t
 reception of its completed pass) confirms it; otherwise the touch is a loose ball and possession stays. Changes
 across a dead ball need no confirmation. Both runs report the label agreement of both definitions
 (`possession_label_agreement` in hazard, `possession_label_agreement_by_confirm` in train).
+
+## Research line: possession + transition length (2026-11)
+
+Within a possession of team w the labels are [transition_w]* [established_w]*, so given the possession a match is
+one number per turnover: the transition length E (`episodes.py`). The main model predicts p(E) per turnover from
+the window of frames after it (`duration.py`); labels follow by construction, without post-processing.
+
+```bash
+# RQ1: how much of the labels is decided by possession? (labels row = oracle possession)
+.venv/bin/python -m phase.decompose --npz ADJ/ajax_psv_full_adj.npz --events event_data.csv --meta meta.json \
+    --poss_confirm second --out artifacts/decompose [model=artifacts/dur_noise model=artifacts/dur_poss_labels]
+# main model + timer + rule on the same episodes; --target noise / interval use both coders (label_A / label_B of
+# the soft npz, or --coders A.npz B.npz); --target label uses the npz labels
+.venv/bin/python -m phase.duration --npz ADJ/ajax_psv_full_soft.npz --events event_data.csv --meta meta.json \
+    --poss_confirm second --target noise --out artifacts/dur_noise
+.venv/bin/python -m phase.duration ... --no-model                       # timer + rule only, no torch
+.venv/bin/python -m phase.duration ... --features concepts,ball,time,episode   # feature-group ablation
+# L2 runs: trained on one coder only
+.venv/bin/python -m phase.duration --npz ADJ/ajax_psv_full_A.npz --events event_data.csv --meta meta.json \
+    --poss_confirm second --out artifacts/dur_A
+.venv/bin/python -m phase.duration --npz ADJ/ajax_psv_full_B.npz --events event_data.csv --meta meta.json \
+    --poss_confirm second --out artifacts/dur_B
+# oracle possession, only for the labels row of the decomposition
+.venv/bin/python -m phase.duration --npz ADJ/ajax_psv_full_adj.npz --poss labels --out artifacts/dur_poss_labels
+```
+
+The model's inputs are the unsmoothed organisation block (`features.py`; ref = the new possessor), the C1–C4
+quantities, the ball, the time since the window start and episode constants (dead-ball turnover, how the ball was
+won, ball position at the start); ablate them with `--features`. The window starts at the first live frame at or
+after the turnover (the restart after a dead-ball turnover) and ends at the next turnover, the next dead ball, a
+period change or `--max_s` (30 s). `--decode tuned` (default) picks the quantile of p(E) on the training frames
+(macro-F1), as τ is tuned for the timer; `--decode median` minimises the expected number of wrong window frames.
+Outputs: `oof.npz` (`pred`, `probs`, `timer`, `rule`), `episodes.csv` (per turnover: lengths of all methods,
+model quantiles, rule reason, each label source's observation), `results.json` (frame metrics, paired run
+bootstrap, transition-length MAE / CRPS / 80% coverage against the labels and each coder, and the coders' interval).
+Better than a human coder: `tools/adj/superhuman.py` (L1 / L2 / L3, see `tools/adj/README.md`).
 
 ## Label mapping (reference team = home)
 | CSV `Annotation_Category` | class |
@@ -57,6 +98,8 @@ across a dead ball need no confirmation. Both runs report the label agreement of
   rolling slowly (1 cm resolution) are real and kept. Ajax–PSV: 15 single frames.
 
 ## Changes that alter training results
+- 2026-11: `evaluate.fill_possession` forward-fills before back-filling, as documented (gaps keep the previous
+  possessor). Event and heuristic possession have NaN only before the first touch, so no earlier result changes.
 - 2026-11: the auxiliary possession target is the annotators' possession (`--poss_target label`). All earlier
   runs (`artifacts/run_full`, `artifacts/adj_v0/deep*`) used the input possession, i.e. `--poss_target input`;
   re-run with `--poss_target input` to reproduce them.

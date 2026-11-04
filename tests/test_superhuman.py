@@ -42,7 +42,7 @@ def adj(tmp_path_factory):
         np.savez(tmp / f"m_{k}.npz", label=y.astype(np.int8))
     np.savez(tmp / "C.npz", label=C.astype(np.int8))
     good = np.where(good >= 0, good, 0)  # models label every frame
-    for name, y in (("good", good), ("copyA", np.where(A >= 0, A, 0))):
+    for name, y in (("good", good), ("copyA", np.where(A >= 0, A, 0)), ("short", good[:T - 500])):
         (tmp / name).mkdir()
         np.savez(tmp / name / "oof.npz", pred=y, gt=ADJ)
     return tmp
@@ -77,3 +77,10 @@ def test_eval_ceiling_reads_duration_runs(adj):
     import eval_ceiling as EC
     preds = EC.load_preds(EC.parse_args([str(adj), "--prefix", "m", f"good={adj / 'good'}"]))
     assert list(preds) == ["good"]  # pred of a phase.duration run, no decoder suffix
+
+
+def test_runs_of_different_length_are_compared_on_the_common_stretch(adj):
+    out = SH.main([str(adj), "--prefix", "m", f"good={adj / 'good'}", "--l2", f"B={adj / 'short'}", "--n_boot", "50",
+                   "--out", "short"])
+    assert out["n_frames_compared"] == 20000 - 500
+    assert out["L2"]["trained on B"]["vs A (competitor B)"]["verdict"]["macro_f1"] == "exceeds"

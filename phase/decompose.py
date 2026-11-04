@@ -7,7 +7,7 @@ Labels = possession + one transition length per possession (phase.episodes). Cel
   possession  labels: the possession the labels imply (oracle) | events: phase.events, as every model uses it
   lengths     oracle: best single change point per episode, read off the labels |
               timer: one tau for every episode, tuned per fold on the training frames (blocked CV) |
-              name=RUN_DIR: out-of-fold lengths of a phase.duration run (its config 'poss' picks the row)
+              name=RUN_DIR: out-of-fold lengths of a phase.duration run; row = its config "poss" (key "poss | name")
 (labels, oracle) misses only labels that break the possession grammar; (events, oracle) adds the possession
 errors; (labels, timer) adds only the length errors; (events, timer) is the full timer system. Differences are
 paired run-level bootstrap intervals (E.bootstrap). Writes DIR/decompose.json.

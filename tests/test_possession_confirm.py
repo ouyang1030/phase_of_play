@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from phase import events as Ev
-from phase import hazard, train
+from phase import hazard
 
 A, B = 0, 1
 PASS, TAKE_ON, TACKLE, INTERCEPT, RECOVERY, FOUL, OUT, GOAL, BALL_TOUCH, DISPOSSESSED = 1, 3, 7, 8, 49, 4, 5, 16, 61, 50
@@ -133,9 +133,10 @@ def test_second_keeps_a_subset_of_the_first_turnovers(seed):
 
 
 # ---------------------------------------------------------------- CLI
-@pytest.mark.parametrize("mod, io", [(train, ["--npz", "m.npz", "--out", "o"]),
-                                     (hazard, ["--npz", "m.npz", "--out", "o", "--events", "e.csv"])])
+@pytest.mark.parametrize("mod, io", [("train", ["--npz", "m.npz", "--out", "o"]),
+                                     ("hazard", ["--npz", "m.npz", "--out", "o", "--events", "e.csv"])])
 def test_cli_poss_confirm(mod, io):
+    mod = pytest.importorskip(f"phase.{mod}")  # phase.train needs torch; the other tests here do not
     assert vars(mod.parser().parse_args(io))["poss_confirm"] == "first"
     assert vars(mod.parser().parse_args(io + ["--poss_confirm", "second"]))["poss_confirm"] == "second"
     with pytest.raises(SystemExit):

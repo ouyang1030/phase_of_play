@@ -4,7 +4,8 @@
          [--third C.npz] [--events EVENTS --meta META --poss_confirm second] [--n_boot N] [--out NAME]
 
 ADJ_DIR holds <prefix>_{adj,A,B}.npz (12.5 Hz). A run is a directory with oof.npz (pred of phase.duration, else
-hsmm of phase.train), out of fold over the labelled stretch.
+hsmm of phase.train), out of fold from frame 0 over its npz's labelled stretch; runs of different length (e.g. on
+<prefix>_A.npz and <prefix>_B.npz) are compared on the common stretch.
 L1  better than one coder: on frames both coders labelled, the model against B vs coder A against B, and the
     model against A vs coder B against A. The adjudicated labels are never the reference: where A and B agree
     they are A and B, so a coder would be right there by construction.
@@ -122,15 +123,19 @@ def main(argv=None):
     runs = {n: load_run(rd) for n, rd in (s.split('=', 1) for s in args.runs)}
     l2 = {c: load_run(rd) for c, rd in (s.split('=', 1) for s in args.l2)}
     lens = {len(p) for p in [*runs.values(), *l2.values()]}
-    if len(lens) != 1:
-        raise ValueError('give at least one run; all runs must cover the same frames')
-    L = lens.pop()
+    if not lens:
+        raise ValueError('give at least one run')
+    # every out-of-fold array starts at frame 0; runs on <prefix>_A / _B npz end at that coder's last labelled
+    # frame, so compare on the common stretch
+    L = min(lens)
+    runs = {k: p[:L] for k, p in runs.items()}
+    l2 = {k: p[:L] for k, p in l2.items()}
     A, B, ADJ = (lab[k][:L] for k in ('A', 'B', 'adj'))
     eps, ep_source = episodes_for(args, adj_npz, lab['adj'], hz)
     eps = eps[(eps.t1 <= L).to_numpy()].reset_index(drop=True)
     both = (A >= 0) & (B >= 0)
     out = dict(config=vars(args) | dict(adj_dir=str(D), third=str(args.third) if args.third else None),
-               episodes_from=ep_source, n_episodes=int(len(eps)), human_ceiling=dict(
+               episodes_from=ep_source, n_episodes=int(len(eps)), n_frames_compared=int(L), human_ceiling=dict(
                    B_vs_A=E.evaluate(np.where(both, A, -1), B, hz)['macro_f1'],
                    A_vs_B=E.evaluate(np.where(both, B, -1), A, hz)['macro_f1']), L1={}, L2={}, L3={})
     for name, pr in runs.items():
