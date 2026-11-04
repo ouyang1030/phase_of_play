@@ -13,7 +13,7 @@ TRANSITIONS = (1, 3)
 def fill_possession(poss_home: np.ndarray) -> np.ndarray:
     """Possession per frame without NaN: frames before the first touch take the first possessor (back-fill);
     any later gap keeps the previous possessor; no possession at all -> home (0)."""
-    return pd.Series(np.asarray(poss_home, float)).bfill().ffill().fillna(0.0).to_numpy()
+    return pd.Series(np.asarray(poss_home, float)).ffill().bfill().fillna(0.0).to_numpy()
 
 
 def established(poss_home: np.ndarray) -> np.ndarray:
