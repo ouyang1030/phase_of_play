@@ -5,7 +5,8 @@
 
 ADJ_DIR holds <prefix>_{adj,A,B}.npz (12.5 Hz labels; hz is read from the adj npz). Predictions (all optional):
 --hazard DIR/preds.npz (timer_* and hazard_* rows of phase.hazard), --deep DIR/oof.npz (argmax, hsmm),
-name=RUN_DIR (RUN_DIR/oof.npz hsmm + RUN_DIR/decoded.npz). All prediction arrays must have the same length.
+name=RUN_DIR (RUN_DIR/oof.npz: pred of a phase.duration run, else hsmm + RUN_DIR/decoded.npz). All prediction
+arrays must have the same length.
 --hz25 evaluates at 25 Hz (each prediction covers frames 2i and 2i+1, STUDY1_PLAN §7.3) against
 labels_final_25hz.csv (codebook v1, apply_decisions.py: final / A / B; 4 = EX-SP, 5 = EX-DEAD, -1 = UNCODED are
 unlabelled) or, if absent, labels_25hz.csv (v0, build_labels.py: label_adj / label_A / label_B).
@@ -69,7 +70,11 @@ def load_preds(args) -> dict:
     for extra in args.runs:
         name, rd = extra.split('=', 1)
         rd = Path(rd)
-        preds[f'{name}_hsmm'], src[f'{name}_hsmm'] = np.load(rd / 'oof.npz')['hsmm'], rd
+        o = np.load(rd / 'oof.npz')
+        if 'pred' in o.files:  # phase.duration run: labels by construction, no decoder name
+            preds[name], src[name] = o['pred'], rd
+        else:
+            preds[f'{name}_hsmm'], src[f'{name}_hsmm'] = o['hsmm'], rd
         if (rd / 'decoded.npz').exists():
             dz = np.load(rd / 'decoded.npz')
             for k in dz.files:
